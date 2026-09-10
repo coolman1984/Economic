@@ -68,10 +68,18 @@ Economic/
 │       │   ├── formatting.py        # table rendering
 │       │   └── demo.py              # fictional demo data
 │       │
-│       ├── data_providers/          # later phase (Phase 2)
+│       ├── data_providers/
+│       │   ├── base.py              # provider contracts, SourceTier, ProviderError
+│       │   ├── freshness.py         # FreshnessPolicy for disclosures/financial facts
+│       │   ├── csv_utils.py         # shared eager CSV reading + hashing
+│       │   ├── instrument_provider.py   # instrument-master CSV import
+│       │   ├── price_provider.py        # EOD price CSV import
+│       │   ├── disclosure_provider.py   # official-document manifest import
+│       │   └── financial_provider.py    # financial-statement fact CSV import
 │       └── api/                     # later phase (Phase 6)
 │
 ├── web/                             # later phase (Phase 6)
+├── EGX_DATA_SOURCES.md              # Phase 2 research findings and what could/could not be verified
 ├── tests/
 │   ├── conftest.py
 │   ├── unit/
@@ -83,12 +91,15 @@ Economic/
 │   │   ├── test_decisions.py
 │   │   ├── test_evidence_gate.py
 │   │   ├── test_committee_integrity.py
+│   │   ├── test_freshness.py
+│   │   ├── test_data_providers.py
 │   │   └── test_persistence.py
 │   ├── integration/
 │   │   ├── test_committee_workflow.py
 │   │   ├── test_persistence_reload.py
 │   │   ├── test_human_gate.py
 │   │   ├── test_hardening.py
+│   │   ├── test_market_data.py
 │   │   └── test_cli.py
 │   └── fixtures/
 │
@@ -162,8 +173,17 @@ Versioned machine-readable request/response structures.
 Owns database connection, migrations, and repositories.
 
 ### `data_providers/`
-Owns normalization of external market/company/news information. Not implemented
-until Phase 2.
+Owns normalization of external market/company/news information into
+provenance-carrying records (ADR-022). Implemented in Phase 2 as file-based
+providers only — no live HTTP/scraping adapter ships yet; see
+`EGX_DATA_SOURCES.md` and ADR-022 for why. Never touches SQL or the database
+directly; `application/market_data_service.py` is the only caller.
+
+### `application/market_data_service.py`
+Owns Phase 2 ingestion workflows: reads a provider's normalized output,
+upserts it through the repositories inside one atomic transaction (including
+the ingestion-run audit row, success or failure), and answers
+`trace_symbol()` — the fact-to-source lookup the Phase 2 gate requires.
 
 ### `domain/money.py`
 Owns exact decimal parsing and formatting. Floats are rejected outright so

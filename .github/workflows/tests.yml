@@ -56,3 +56,24 @@ jobs:
           python -m economic --home "$HOME_DIR" portfolio show --json
           python -m economic --home "$HOME_DIR" committee \
             --question "Is this demo portfolio concentrated?" --mock --json
+
+      - name: Prove the market-data import and traceability loop (Phase 2)
+        run: |
+          HOME_DIR="$RUNNER_TEMP/economic-market"
+          FIXTURES="$RUNNER_TEMP/market-fixtures"
+          mkdir -p "$FIXTURES"
+          cat > "$FIXTURES/instruments.csv" <<'EOF'
+          symbol,name,sector,isin,source_name,source_url
+          COMI,Commercial International Bank (Egypt) S.A.E.,Banks,EGS60121C018,stockanalysis.com,https://stockanalysis.com/quote/egx/COMI/
+          EOF
+          cat > "$FIXTURES/prices.csv" <<'EOF'
+          symbol,date,close,source_name,source_url
+          COMI,2026-09-08,74.25,EGX prices page,https://www.egx.com.eg/en/prices.aspx
+          EOF
+          python -m economic --home "$HOME_DIR" init
+          python -m economic --home "$HOME_DIR" market import-instruments --file "$FIXTURES/instruments.csv"
+          python -m economic --home "$HOME_DIR" market import-prices --file "$FIXTURES/prices.csv"
+          python -m economic --home "$HOME_DIR" market trace --symbol COMI --json
+          # Re-import must be idempotent: row counts must not change on a second run.
+          python -m economic --home "$HOME_DIR" market import-prices --file "$FIXTURES/prices.csv"
+          python -m economic --home "$HOME_DIR" market history --json

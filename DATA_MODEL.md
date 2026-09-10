@@ -104,6 +104,10 @@ Later:
 
 ### price_snapshots
 
+Implemented in migration 001 (Phase 1); `source_tier` and `published_at` added
+by migration 003 (Phase 2, ADR-023) with safe defaults so existing rows need
+no backfill.
+
 ```text
 id
 instrument_id
@@ -116,56 +120,91 @@ volume_optional
 source
 source_url_optional
 retrieved_at
+source_tier          -- Phase 2: OFFICIAL | PROVIDER | NEWS | COMMUNITY | IMPORT
+published_at          -- Phase 2: defaults to price_date when not supplied
 ```
 
 ### external_documents
 
-For disclosures, statements, and official documents.
+For disclosures, statements, and official documents. Implemented in migration
+003 (Phase 2). `fingerprint` is `source_name|external_id` when an external_id
+is supplied, else `content|<sha256>` — either way, re-importing the identical
+or corrected document updates the row rather than duplicating it (ADR-024).
 
 ```text
 id
 instrument_id_optional
+symbol_optional
 document_type
 title
 published_at
-source
+source_name
+source_tier
 source_url
 external_id_optional
-content_hash_optional
+content_hash                    -- sha256 of the actual file bytes, always present
 local_path_optional
 retrieved_at
+fingerprint
 ```
 
 ### news_items
 
-```text
-id
-instrument_id_optional
-sector_optional
-title
-published_at
-source
-source_url
-importance
-summary_optional
-retrieved_at
-```
+Not implemented. Deferred past Phase 2 by explicit scope decision — see
+`ROADMAP.md` Phase 2 scope note: news is opinion-tier data and can wait for
+Phase 4's research layer.
 
 ### financial_facts
 
-Normalized financial statement facts later.
+Implemented in migration 003 (Phase 2). `fingerprint` is
+`symbol|period_end|period_type|metric|source_name`, so the same statement
+metric reported again by the same source updates rather than duplicates
+(ADR-024). `source_document_id` links a fact to the `external_documents` row
+it was reported in, resolved by `source_document_external_id` at import time —
+the fact-to-document link the Phase 2 traceability gate depends on.
 
 ```text
 id
 instrument_id
+symbol
 period_start_optional
 period_end
 period_type
 metric
 value
 currency
-source_document_id
+source_document_id_optional
+source_name
+source_tier
+source_url_optional
+published_at_optional
+retrieved_at
+fingerprint
 created_at
+```
+
+### ingestion_runs
+
+New in Phase 2. An audit trail of every import attempt, successful or failed —
+never silent, mirroring the agent-adapter failure taxonomy in spirit
+(`data_providers/base.py`'s `FAILURE_KINDS`).
+
+```text
+id
+kind                  -- instruments | prices | disclosures | financial_facts
+provider
+source_optional
+ok
+failure_kind_optional
+error_optional
+read_count
+inserted_count
+updated_count
+duplicate_count
+rejected_count
+rejected_json          -- per-row rejection reasons, never a silently dropped row
+started_at
+completed_at
 ```
 
 ## 4. Research and Decision Tables
@@ -411,6 +450,23 @@ Every externally sourced record should support freshness decisions using:
 - source URL where available.
 
 Stale data must be visible to the research and risk layers.
+
+**Implemented (Phase 2):** every `price_snapshots`, `external_documents`, and
+`financial_facts` row carries `source_name`/`source_tier`/`source_url`/
+`published_at`/`retrieved_at`. Prices still classify freshness through the
+frozen `domain/portfolio.py` staleness check used for valuation (ADR-017).
+Disclosures and financial facts classify freshness through the new, separate
+`data_providers/freshness.py` (`FreshnessPolicy`, ADR-023) — the two are
+deliberately independent so nothing in Phase 2 needed to touch frozen code.
+
+`source_tier` is one of `OFFICIAL | PROVIDER | NEWS | COMMUNITY | IMPORT`
+(`data_providers/base.py::SourceTier`), matching the priority order in
+`INVESTMENT_RULES.md` §4. Phase 2's file-based providers tag every record
+`IMPORT` — the tier the software actually verified — rather than assuming
+`OFFICIAL` for content that merely originated from an official source but
+whose channel (a human-placed file) the software cannot itself authenticate.
+A future live adapter reading directly from a confirmed EGX/EGID endpoint
+would be the first to legitimately claim `OFFICIAL`.
 
 ## 10. Migration Rule
 

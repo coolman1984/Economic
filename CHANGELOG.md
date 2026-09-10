@@ -2,6 +2,154 @@
 
 All meaningful project changes should be recorded here.
 
+## 2026-09-10 — Phase 2 Delivered: Reliable EGX Data Layer (Market-Truth Only)
+
+Built exactly to the scope locked in `ROADMAP.md` on 2026-09-10: instrument
+master, price ingestion, official disclosure ingestion, financial-statement
+ingestion/import, provenance, freshness, idempotent duplicate handling, and
+local caching. No news feed, no new agent role, no orchestration change, and
+no change to the frozen accounting core (`domain/ledger.py`,
+`domain/portfolio.py`, `domain/simulation.py`, `domain/decisions.py`), agent
+orchestration (`agents/orchestrator.py`, `agents/base_adapter.py`,
+`agents/contracts.py`), or recommendation logic (`domain/risk.py`'s evidence
+gate) — confirmed by `git status` against every file in that list before
+closing the phase.
+
+### Research first
+
+Before writing ingestion code, this session probed candidate EGX data sources
+directly. Every outbound request to an external host — `egx.com.eg`,
+`egxapi.com`, `mubasher.info`, `eodhd.com`, `twelvedata.com`, even
+`wikipedia.org` — returned `403` from this session's own egress policy, and
+the `WebFetch` tool was blocked identically; only `WebSearch` (summarized
+snippets, not raw pages) was reachable. Findings, and what could and could not
+be verified, are recorded in `EGX_DATA_SOURCES.md`. Two things followed
+directly from that research:
+
+- EGX's real machine-readable feed is licensed through **EGID**, described in
+  search results as *"the sole authorized data provider"* for EGX market data
+  for 25+ years — not a free public API. No credential-free official feed
+  exists to build against.
+- The task's own instruction — *"do not assume scraping or APIs are reliable
+  until proven with small probes"* — could not be satisfied for any live
+  source from this session, so no live adapter for any source is shipped or
+  claimed reliable (ADR-022).
+
+### Added
+
+- **`data_providers/` package** — provider contracts (`base.py`: `Provider`,
+  `Provenance`, `SourceTier`, `IngestionReport`, `ProviderError` with a
+  normalized failure taxonomy paralleling `agents/base_adapter.py`), a
+  freshness classifier for disclosures/financial facts (`freshness.py`,
+  ADR-023, deliberately independent of the frozen price-staleness check), and
+  four file-based providers: `InstrumentFileProvider`, `PriceFileProvider`,
+  `DisclosureFileProvider`, `FinancialFactFileProvider`. Each validates
+  eagerly, parses money/quantity as exact `Decimal` (never float, per
+  ADR-015), and rejects a bad individual row without losing the good ones in
+  the same file.
+- **`application/market_data_service.py`** — one atomic transaction per
+  ingestion run (including the audit row, success or failure), plus
+  `trace_symbol()`: every stored fact for a symbol with its source, satisfying
+  the Phase 2 traceability gate.
+- **Schema migration 003** — creates `external_documents` and
+  `financial_facts` (documented in `DATA_MODEL.md` since Phase 1 planning but
+  never built until now), a new `ingestion_runs` audit table, and adds
+  `source_tier`/`published_at` to `price_snapshots` with safe defaults.
+  Verified to upgrade a populated v2 database with zero data loss.
+- **CLI**: `economic market import-instruments|import-prices|
+  import-disclosures|import-financials|trace|history`, all with `--json`.
+- **CI**: the GitHub Actions suite now also runs the market-data
+  import-then-trace-then-reimport loop on every push, proving idempotency and
+  traceability on a clean runner, not just locally.
+- **Real-company traceability fixture**: two currently-listed EGX companies
+  (COMI — Commercial International Bank Egypt, ISIN EGS60121C018; HRHO — EFG
+  Holding S.A.E., ISIN EGS69101C011), with real ISINs and citation URLs
+  gathered via research rather than invented, used throughout the test suite
+  and the CI smoke test.
+- 59 new tests (11 freshness, 22 provider parsing/validation, 13 full-pipeline
+  integration, 3 tier-preference regression, repository-level upsert/dedup
+  tests, 2 CLI round-trip tests, 1 migration-upgrade regression).
+
+### Fixed during the phase (found by the phase's own tests, not shipped broken)
+
+- **Document-to-fact linking ignored source-name mismatches incorrectly.** A
+  financial fact and the document it cites are routinely attributed to
+  different named sources (a data aggregator's number, the exchange's filing)
+  even when a human links them with the same external reference. The initial
+  lookup required both source names to match, which silently failed to link
+  in exactly the ordinary case the feature exists for. Fixed by keying the
+  lookup on the external_id alone (ADR-024).
+- **A CSV-reading generator validated lazily.** `read_rows` originally used
+  `yield`, so its file-not-found/empty/bad-schema checks only ran on first
+  iteration — a caller that didn't immediately loop would silently get no
+  error at all. Rewritten to validate eagerly and return a list; caught by a
+  smoke test before it shipped.
+- **`InstrumentRepository` stored `isin` but never selected it back out** —
+  a pre-existing Phase 1 gap this phase's work exposed. `Instrument` and the
+  repository's queries now carry it.
+- **`official-source data is preferred when available` was not actually
+  implemented.** When two sources reported a price for the same instrument on
+  the same date, `latest_mark` picked whichever was inserted last, not the
+  more authoritative one. Fixed: candidates now rank by source-tier authority
+  first, insertion recency only as a same-tier tiebreak — which also
+  reproduces exact Phase 1 behavior for every pre-Phase-2 row, since they all
+  share the IMPORT default tier.
+
+### Verified
+
+- `python -m pytest` — **224 passed** (165 Phase 1 + 59 Phase 2), zero Phase 1
+  tests modified.
+- Full pipeline exercised end to end: instrument master -> prices ->
+  disclosures -> financial facts, for two real EGX companies, with real
+  provenance on every row.
+- Idempotency: re-importing identical files after the first run left every
+  row count unchanged; every row routed to the update path.
+- Source failures: a missing file, an empty file, and a renamed-column
+  ("schema changed") file each raised a typed, normalized failure and wrote
+  nothing; every attempt — success and failure — appears in `market history`.
+- Traceability: `economic market trace --symbol COMI` and `--symbol HRHO` each
+  show instrument identity (including a real ISIN), a priced snapshot, a
+  disclosure, and — for COMI — a financial fact whose `source_document_id`
+  resolves to the actual disclosure row, completing fact -> document -> source.
+- Tier preference: an OFFICIAL-tier price beats a COMMUNITY-tier price
+  reported for the same date; a more recent date still always wins over an
+  older OFFICIAL one (freshness first, tier only breaks a same-date tie).
+- Architecture: `data_providers/` contains no SQL and no reference to
+  `agents/`/`cli/`; no SQL exists outside `persistence/`; no `subprocess` call
+  exists outside `agents/` — checked by grep, not assumed.
+- CI: the exact sequence the GitHub Actions workflow runs (init, import
+  instruments, import prices, trace, re-import, history) was run locally
+  first and produced identical output before being pushed.
+
+### Decisions
+
+- ADR-022 local provenance-carrying import is the Phase 2 default, not a live
+  scraper.
+- ADR-023 freshness is judged separately for ingested facts and for portfolio
+  pricing.
+- ADR-024 documents and financial facts are deduplicated by fingerprint,
+  linked by external ID.
+
+### Known limitations (explicit, not silent)
+
+- No live HTTP/scraping adapter for EGX or any third-party aggregator. Every
+  fact enters through a file a human placed there. This is a deliberate
+  boundary (ADR-022), not an oversight — see `EGX_DATA_SOURCES.md`.
+- Every Phase 2 record is tagged `source_tier = IMPORT`: the tier the software
+  actually verified, not an assumed `OFFICIAL` for content that merely
+  originated from an official channel the software cannot itself authenticate.
+- News ingestion is out of scope for Phase 2 by the locked scope decision
+  (opinion-tier data, deferred to Phase 4).
+- `financial_facts` normalization is a flat metric/value/period model; no
+  statement-template or XBRL-style structure. Sufficient for the traceability
+  gate; a richer model is future work if a real statement feed is added.
+
+### Next Target
+
+**Phase 3 — Portfolio Construction and Risk**, per `ROADMAP.md`.
+
+---
+
 ## 2026-09-10 — Phase 1 Closed
 
 Phase 1 reviewed and accepted. The deterministic accounting core is now frozen:

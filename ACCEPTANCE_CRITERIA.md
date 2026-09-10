@@ -129,15 +129,50 @@ This file defines the minimum evidence required before a phase is considered com
 
 # Phase 2 — EGX Data Layer Gate
 
+**Status: PASSED, with an honest scope boundary** — verified 2026-09-10. See
+`CHANGELOG.md` for the full evidence and `EGX_DATA_SOURCES.md` for what was and
+was not verifiable from this development session (its egress is blocked to
+every external host, confirmed by direct probe). Phase 2 ships local,
+provenance-carrying **import** as the working default (ADR-022); a live
+HTTP/scraping adapter behind the same contract is explicit future work, not
+claimed done here.
+
 Do not call Phase 2 complete until:
 
-- [ ] each provider has a stable adapter;
-- [ ] every normalized record has source/provenance;
-- [ ] duplicate ingestion is idempotent;
-- [ ] freshness can be evaluated;
-- [ ] source failures are explicit;
-- [ ] official-source data is preferred when available;
-- [ ] selected real EGX companies can be traced from displayed fact back to source.
+- [x] each provider has a stable adapter — `InstrumentFileProvider`,
+      `PriceFileProvider`, `DisclosureFileProvider`, `FinancialFactFileProvider`
+      all implement the shared `Provider` contract in `data_providers/base.py`;
+      22 unit tests cover their parsing, validation, and rejection behavior.
+- [x] every normalized record has source/provenance — every `price_snapshots`,
+      `external_documents`, and `financial_facts` row carries source_name,
+      source_tier, source_url (where given), published_at, and retrieved_at;
+      documents additionally carry a SHA-256 of their actual file bytes.
+- [x] duplicate ingestion is idempotent — re-importing identical files
+      leaves row counts unchanged (routes to update, not insert) for every
+      one of the four kinds; a corrected document with the same external_id
+      updates in place. Verified by dedicated regression tests.
+- [x] freshness can be evaluated — `data_providers/freshness.py`
+      (`FreshnessPolicy`) classifies disclosures/financial facts as
+      FRESH/AGING/STALE/UNKNOWN; prices continue using the frozen Phase 1
+      staleness check (ADR-017, ADR-023 — the two are deliberately separate).
+- [x] source failures are explicit — a missing file, empty file, or changed
+      schema raises a typed `ProviderError` with a normalized failure_kind and
+      writes nothing; every ingestion attempt (success or failure) is recorded
+      in `ingestion_runs`, never silently dropped.
+- [x] official-source data is preferred when available — `latest_mark` orders
+      candidates for the same date by source-tier authority before recency of
+      insertion, so an OFFICIAL-tier price beats a COMMUNITY-tier price
+      reported for the same day. (This was a real gap found and fixed during
+      the phase; see ADR-024 note in `CHANGELOG.md`.)
+- [x] selected real EGX companies can be traced from displayed fact back to
+      source — two real, currently-listed EGX companies (COMI — Commercial
+      International Bank Egypt, ISIN EGS60121C018; HRHO — EFG Holding S.A.E.,
+      ISIN EGS69101C011), with real ISINs and citation URLs gathered via
+      research, are used as the traceability fixture. `economic market trace
+      --symbol COMI` and `--symbol HRHO` show every stored fact — instrument
+      identity, price, disclosure, financial-statement line item — each with
+      its real source name, URL, and date, including the fact -> document ->
+      source chain for the financial fact.
 
 # Phase 3 — Risk and Rebalancing Gate
 

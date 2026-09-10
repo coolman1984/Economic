@@ -154,6 +154,43 @@ def test_demo_seed_uses_clearly_fictional_symbols(run):
     assert all("fictional" in (item["name"] or "") for item in instruments)
 
 
+def test_market_import_and_trace_round_trip(run, tmp_path):
+    run("init")
+    instruments = tmp_path / "instruments.csv"
+    instruments.write_text(
+        "symbol,name,sector,isin,source_name,source_url\n"
+        "COMI,Commercial International Bank (Egypt) S.A.E.,Banks,EGS60121C018,"
+        "stockanalysis.com,https://stockanalysis.com/quote/egx/COMI/\n"
+    )
+    prices = tmp_path / "prices.csv"
+    prices.write_text(
+        "symbol,date,close,source_name,source_url\n"
+        "COMI,2026-09-08,74.25,EGX prices page,https://www.egx.com.eg/en/prices.aspx\n"
+    )
+
+    r1 = json_run(run, "market", "import-instruments", "--file", str(instruments))
+    assert r1["ok"] is True and r1["inserted"] == 1
+    r2 = json_run(run, "market", "import-prices", "--file", str(prices))
+    assert r2["ok"] is True and r2["inserted"] == 1
+
+    trace = json_run(run, "market", "trace", "--symbol", "COMI")
+    assert trace["instrument"]["isin"] == "EGS60121C018"
+    assert trace["prices"][0]["source"] == "EGX prices page"
+
+    history = json_run(run, "market", "history")
+    assert len(history) == 2
+    assert all(entry["ok"] for entry in history)
+
+
+def test_market_import_failure_is_a_clean_error_not_a_traceback(run, tmp_path):
+    run("init")
+    captured = run("market", "import-prices", "--file", str(tmp_path / "missing.csv"),
+                   expect=1)
+    assert "file not found" in captured.out
+    assert "Traceback" not in captured.out
+    assert "Traceback" not in captured.err
+
+
 def test_unknown_account_reports_a_clear_error(run):
     run("init")
     captured = run("portfolio", "show", "--account", "Nope", expect=1)

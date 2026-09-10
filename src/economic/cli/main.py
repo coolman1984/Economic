@@ -18,9 +18,11 @@ from .. import __version__
 from ..agents import artifacts as artifact_module
 from ..application.context import AppContext
 from ..application.decision_service import DecisionService
+from ..application.market_data_service import MarketDataService
 from ..application.portfolio_service import PortfolioService
 from ..application.research_service import ResearchService
 from ..application.simulation_service import SimulationService
+from ..data_providers.base import ProviderError
 from ..domain import decisions as decision_rules
 from ..domain import ledger, portfolio, risk
 from ..domain.money import AmountError, display, to_text
@@ -219,6 +221,39 @@ def build_parser() -> argparse.ArgumentParser:
         dest="subcommand", required=True)
     demo_seed = _leaf(demo_cmd, "seed", help="create a fictional demo account")
     demo_seed.add_argument("--account", default=demo.DEMO_ACCOUNT)
+
+    # market (Phase 2 — market-truth layer)
+    market = sub.add_parser(
+        "market", help="import instruments, prices, disclosures, and financial facts"
+    ).add_subparsers(dest="subcommand", required=True)
+
+    market_instruments = _leaf(market, "import-instruments",
+                               help="bulk-import an instrument master CSV")
+    market_instruments.add_argument("--file", required=True, type=Path)
+
+    market_prices = _leaf(market, "import-prices", help="bulk-import an EOD price CSV")
+    market_prices.add_argument("--file", required=True, type=Path)
+
+    market_disclosures = _leaf(market, "import-disclosures",
+                               help="import official documents from a manifest CSV")
+    market_disclosures.add_argument("--manifest", required=True, type=Path)
+    market_disclosures.add_argument("--docs-dir", type=Path,
+                                    help="directory the manifest's file paths are relative to"
+                                    " (default: the manifest's own directory)")
+
+    market_financials = _leaf(market, "import-financials",
+                              help="import normalized financial-statement facts CSV")
+    market_financials.add_argument("--file", required=True, type=Path)
+
+    market_trace = _leaf(market, "trace",
+                         help="show every stored fact for a symbol and its source")
+    market_trace.add_argument("--symbol", required=True)
+
+    market_history = _leaf(market, "history", help="list past ingestion runs")
+    market_history.add_argument("--limit", type=int, default=20)
+    market_history.add_argument("--kind",
+                                choices=["instruments", "prices", "disclosures",
+                                        "financial_facts"])
 
     return parser
 
@@ -787,6 +822,103 @@ def cmd_audit(context: AppContext, args) -> int:
     return EXIT_OK
 
 
+def _render_ingestion_report(report) -> None:
+    verb = "OK" if report.ok else "FAILED"
+    print(formatting.heading(f"Ingestion {verb} — {report.kind}"))
+    print(f"source      {report.source}")
+    if not report.ok:
+        print(f"failure     {report.failure_kind}")
+        print(f"error       {report.error}")
+        return
+    print(f"read        {report.read}")
+    print(f"inserted    {report.inserted}")
+    print(f"updated     {report.updated}")
+    print(f"duplicate   {report.duplicate}")
+    print(f"rejected    {report.rejected_count}")
+    if report.rejected:
+        print("\nRejected rows:")
+        for item in formatting.bullets(
+                [f"row {r.index}: {r.reason}" for r in report.rejected]):
+            print(item)
+
+
+def cmd_market(context: AppContext, args) -> int:
+    service = MarketDataService(context)
+
+    if args.subcommand == "import-instruments":
+        report = service.import_instruments(args.file)
+    elif args.subcommand == "import-prices":
+        report = service.import_prices(args.file)
+    elif args.subcommand == "import-disclosures":
+        report = service.import_disclosures(args.manifest, docs_dir=args.docs_dir)
+    elif args.subcommand == "import-financials":
+        report = service.import_financial_facts(args.file)
+    elif args.subcommand == "trace":
+        trace = service.trace_symbol(args.symbol)
+
+        def render():
+            print(formatting.heading(f"Traceability — {trace['symbol']}"))
+            instrument = trace["instrument"]
+            print(f"{instrument['symbol']}  {instrument.get('name') or '(no name on file)'}")
+            print(f"sector: {instrument.get('sector') or '-'}   "
+                  f"isin: {instrument.get('isin') or '-'}")
+
+            print(formatting.heading("Prices"))
+            if trace["prices"]:
+                print(formatting.table(
+                    ["date", "close", "source", "retrieved"],
+                    [[p["price_date"], p["close"], p["source"], p["retrieved_at"]]
+                     for p in trace["prices"]],
+                ))
+            else:
+                print("No price history recorded.")
+
+            print(formatting.heading("Disclosures"))
+            if trace["documents"]:
+                for doc in trace["documents"]:
+                    print(f"\n  [{doc['document_type']}] {doc['title']}")
+                    print(f"    published: {doc.get('published_at') or 'unknown'}   "
+                          f"source: {doc['source_name']} ({doc['source_tier']})")
+                    print(f"    url: {doc.get('source_url') or '-'}")
+                    print(f"    content sha256: {doc['content_hash']}")
+            else:
+                print("No disclosures on file.")
+
+            print(formatting.heading("Financial facts"))
+            if trace["financial_facts"]:
+                print(formatting.table(
+                    ["period end", "type", "metric", "value", "source", "linked doc"],
+                    [[f["period_end"], f["period_type"], f["metric"], f["value"],
+                      f["source_name"], f["source_document_id"] or "-"]
+                     for f in trace["financial_facts"]],
+                ))
+            else:
+                print("No financial facts on file.")
+
+        _print(trace, args, render)
+        return EXIT_OK
+    elif args.subcommand == "history":
+        runs = service.list_ingestion_runs(limit=args.limit, kind=args.kind)
+
+        def render():
+            if not runs:
+                print("No ingestion runs yet.")
+                return
+            print(formatting.table(
+                ["id", "kind", "ok", "inserted", "updated", "rejected", "started"],
+                [[r["id"], r["kind"], "yes" if r["ok"] else "no", r["inserted_count"],
+                  r["updated_count"], r["rejected_count"], r["started_at"]] for r in runs],
+            ))
+
+        _print(runs, args, render)
+        return EXIT_OK
+    else:  # pragma: no cover - argparse guarantees a valid subcommand
+        raise ValueError(f"unknown market subcommand: {args.subcommand}")
+
+    _print(report.to_dict(), args, lambda: _render_ingestion_report(report))
+    return EXIT_OK if report.ok else EXIT_ERROR
+
+
 def cmd_demo(context: AppContext, args) -> int:
     summary = demo.seed(context, account_name=args.account)
 
@@ -821,6 +953,7 @@ HANDLERS = {
     "run": cmd_run,
     "audit": cmd_audit,
     "demo": cmd_demo,
+    "market": cmd_market,
 }
 
 KNOWN_ERRORS = (
@@ -832,6 +965,7 @@ KNOWN_ERRORS = (
     AmountError,
     sqlite_db.DatabaseError,
     sqlite3.DatabaseError,
+    ProviderError,
     ValueError,
 )
 

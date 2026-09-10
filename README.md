@@ -81,7 +81,14 @@ Start with these files before writing code:
 
 `portfolio facts -> independent research -> cross-review -> synthesis -> human decision -> permanent history`
 
-Everything else is a layer on top of that core. See `CHANGELOG.md` for what
+**Phase 2 — EGX Data Layer (market-truth only) is implemented.** Instruments,
+prices, official disclosures, and financial statements can be imported with
+full provenance, idempotent re-import, explicit source-failure reporting, and
+a `market trace` command that shows any stored fact traced back to its real
+source. See `EGX_DATA_SOURCES.md` for what this phase's research found and
+could not verify, and why it ships as import rather than a live scraper.
+
+Everything else is a layer on top of these. See `CHANGELOG.md` for what
 shipped and `ROADMAP.md` for what comes next.
 
 ## Setup
@@ -130,6 +137,12 @@ Claude Code CLIs were found on your PATH.
 | `economic run show` | Reload one complete run from history |
 | `economic audit` | Show the audit log |
 | `economic demo seed` | Load fictional demo data |
+| `economic market import-instruments` | Bulk-import an instrument master CSV |
+| `economic market import-prices` | Bulk-import an EOD price CSV |
+| `economic market import-disclosures` | Import official documents from a manifest CSV |
+| `economic market import-financials` | Import normalized financial-statement facts |
+| `economic market trace` | Show every stored fact for a symbol and its source |
+| `economic market history` | List past ingestion runs, successful and failed |
 
 Add `--json` to any command for machine-readable output. `--home <dir>` selects
 a different project directory.
@@ -212,6 +225,51 @@ to, and the exact reason. You can still approve a restricted recommendation —
 you remain the decision maker — but you will always be told what you are
 approving. Set `min_data_quality_for_action` in your config to change the floor.
 
+## Market data (Phase 2)
+
+Instruments, prices, official disclosures, and financial-statement facts are
+loaded by importing CSV/manifest files you provide — there is no automatic EGX
+scraping. This is a deliberate choice, not a shortcut: see
+`EGX_DATA_SOURCES.md` for the research behind it and ADR-022 in `DECISIONS.md`.
+Every imported record carries real provenance (source name, URL, publication
+date, retrieval time), and every import is safe to re-run — an identical file
+updates rows in place rather than duplicating them.
+
+```bash
+economic market import-instruments --file instruments.csv
+economic market import-prices --file prices.csv
+economic market import-disclosures --manifest disclosures.csv
+economic market import-financials --file financials.csv
+
+economic market trace --symbol COMI       # every stored fact for COMI, with its source
+economic market history                   # every import attempt, successful or failed
+```
+
+**Instrument master CSV** — required: `symbol`. Optional: `name`, `sector`,
+`industry`, `exchange`, `currency`, `isin`, `source_name`, `source_url`.
+
+**Price CSV** — required: `symbol`, `date`, `close`. Optional: `open`, `high`,
+`low`, `volume`, `source_name`, `source_url`.
+
+**Disclosure manifest CSV** — required: `document_type` (one of
+`BOARD_DECISION`, `DIVIDEND`, `CAPITAL_CHANGE`, `TRADING_HALT`,
+`QUARTERLY_REPORT`, `ANNUAL_REPORT`, `FINANCIAL_STATEMENT`, `PROSPECTUS`,
+`MATERIAL_NEWS`, `OTHER`), `title`, `file` (a path to the document you already
+downloaded, relative to the manifest by default). Optional: `symbol`,
+`published_at`, `source_name`, `source_url`, `external_id`. The document's
+SHA-256 is recorded automatically.
+
+**Financial-facts CSV** — required: `symbol`, `period_end`, `period_type` (one
+of `ANNUAL`, `QUARTERLY`, `SEMI_ANNUAL`, `TTM`), `metric`, `value`. Optional:
+`period_start`, `currency`, `source_document_external_id` (links the fact to a
+disclosure imported with the same `external_id`, completing the fact -> document
+-> source chain), `source_name`, `source_url`.
+
+Any row that fails validation is rejected individually with a stated reason —
+the rest of the file still imports. A bad file (missing, empty, or the wrong
+columns) fails the whole run explicitly rather than guessing; nothing is ever
+written from a run that failed to read.
+
 ## Tests
 
 ```bash
@@ -223,11 +281,12 @@ python -m pytest
 
 ```text
 src/economic/
-  domain/        deterministic rules: ledger, portfolio, simulation, risk, decisions
-  application/   workflows: portfolio, simulation, research, decision services
-  persistence/   SQLite connection, migrations, repositories
-  agents/        contracts, validators, Codex/Claude/mock adapters, orchestrator
-  cli/           command-line interface
-tests/           unit and integration tests
-data/            runtime database and run artifacts (never committed)
+  domain/          deterministic rules: ledger, portfolio, simulation, risk, decisions
+  application/     workflows: portfolio, simulation, research, decision, market-data services
+  persistence/     SQLite connection, migrations, repositories
+  agents/          contracts, validators, Codex/Claude/mock adapters, orchestrator
+  data_providers/  Phase 2 file-based import: instruments, prices, disclosures, financials
+  cli/             command-line interface
+tests/             unit and integration tests
+data/              runtime database and run artifacts (never committed)
 ```

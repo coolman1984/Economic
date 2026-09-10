@@ -54,6 +54,7 @@ class Instrument:
     industry: Optional[str]
     currency: str
     trading_status: str
+    isin: Optional[str] = None
 
 
 class BaseRepository:
@@ -137,9 +138,15 @@ class InstrumentRepository(BaseRepository):
             )
         return self.get_by_symbol(symbol)
 
+    def set_isin(self, symbol: str, isin: str) -> None:
+        self.connection.execute(
+            "UPDATE instruments SET isin = ?, updated_at = ? WHERE symbol = ?",
+            (isin, utc_now(), ledger.normalize_symbol(symbol)),
+        )
+
     def get_by_symbol(self, symbol: str) -> Instrument:
         row = self.connection.execute(
-            "SELECT id, symbol, name, exchange, sector, industry, currency, trading_status"
+            "SELECT id, symbol, name, exchange, sector, industry, currency, trading_status, isin"
             " FROM instruments WHERE symbol = ?",
             (ledger.normalize_symbol(symbol),),
         ).fetchone()
@@ -149,7 +156,7 @@ class InstrumentRepository(BaseRepository):
 
     def list(self) -> List[Instrument]:
         rows = self.connection.execute(
-            "SELECT id, symbol, name, exchange, sector, industry, currency, trading_status"
+            "SELECT id, symbol, name, exchange, sector, industry, currency, trading_status, isin"
             " FROM instruments ORDER BY symbol"
         ).fetchall()
         return [Instrument(**dict(row)) for row in rows]
@@ -281,7 +288,14 @@ class PriceRepository(BaseRepository):
         price_date: str,
         source: str = "manual",
         source_url: Optional[str] = None,
+        source_tier: str = "IMPORT",
+        published_at: Optional[str] = None,
     ) -> PriceMark:
+        """Upsert one price snapshot.
+
+        ``source_tier`` and ``published_at`` are Phase 2 provenance additions
+        (ADR-023); they default so every Phase 1 caller keeps working unchanged.
+        """
         symbol = ledger.normalize_symbol(symbol)
         close = money(price, "price")
         if close <= 0:
@@ -290,29 +304,47 @@ class PriceRepository(BaseRepository):
         now = utc_now()
         self.connection.execute(
             "INSERT INTO price_snapshots (instrument_id, symbol, price_date, close_price,"
-            " source, source_url, retrieved_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
+            " source, source_url, retrieved_at, source_tier, published_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
             " ON CONFLICT (instrument_id, price_date, source) DO UPDATE SET"
             " close_price = excluded.close_price, source_url = excluded.source_url,"
-            " retrieved_at = excluded.retrieved_at",
-            (instrument_id, symbol, price_date, to_text(close), source, source_url, now),
+            " retrieved_at = excluded.retrieved_at, source_tier = excluded.source_tier,"
+            " published_at = excluded.published_at",
+            (instrument_id, symbol, price_date, to_text(close), source, source_url, now,
+             source_tier, published_at or price_date),
         )
         return PriceMark(
             symbol=symbol, price=close, price_date=price_date, source=source, retrieved_at=now
         )
 
+    # Tier authority order for same-date tie-breaking (INVESTMENT_RULES.md §4,
+    # ADR-022): when more than one source reports a price for the same
+    # instrument on the same date, the more authoritative tier wins, not
+    # whichever happened to be inserted last.
+    _TIER_RANK_SQL = (
+        "CASE source_tier"
+        " WHEN 'OFFICIAL' THEN 0 WHEN 'PROVIDER' THEN 1 WHEN 'NEWS' THEN 2"
+        " WHEN 'COMMUNITY' THEN 3 ELSE 4 END"
+    )
+
     def latest_mark(self, symbol: str, as_of: Optional[str] = None) -> Optional[PriceMark]:
-        """Latest snapshot on or before ``as_of`` (documented pricing policy)."""
+        """Latest snapshot on or before ``as_of`` (documented pricing policy).
+
+        Among snapshots sharing the most recent qualifying date, the most
+        authoritative source tier is preferred; ``id DESC`` only breaks a tie
+        within the same tier, preserving Phase 1 behavior for pre-Phase-2 rows
+        (which all share the IMPORT default and so compare equal here).
+        """
         symbol = ledger.normalize_symbol(symbol)
+        order = f"ORDER BY price_date DESC, {self._TIER_RANK_SQL} ASC, id DESC LIMIT 1"
         if as_of:
             row = self.connection.execute(
-                "SELECT * FROM price_snapshots WHERE symbol = ? AND price_date <= ?"
-                " ORDER BY price_date DESC, id DESC LIMIT 1",
+                f"SELECT * FROM price_snapshots WHERE symbol = ? AND price_date <= ? {order}",
                 (symbol, as_of),
             ).fetchone()
         else:
             row = self.connection.execute(
-                "SELECT * FROM price_snapshots WHERE symbol = ?"
-                " ORDER BY price_date DESC, id DESC LIMIT 1",
+                f"SELECT * FROM price_snapshots WHERE symbol = ? {order}",
                 (symbol,),
             ).fetchone()
         if row is None:
@@ -349,6 +381,171 @@ class PriceRepository(BaseRepository):
             )
             for row in rows
         ]
+
+
+class DocumentRepository(BaseRepository):
+    """Owns ``external_documents`` — official disclosures and statements on file."""
+
+    def add(self, document_type: str, title: str, source_name: str, content_hash: str,
+            symbol: Optional[str] = None, instrument_id: Optional[int] = None,
+            published_at: Optional[str] = None, source_tier: str = "IMPORT",
+            source_url: Optional[str] = None, external_id: Optional[str] = None,
+            local_path: Optional[str] = None, retrieved_at: Optional[str] = None) -> dict:
+        """Upsert one document.
+
+        Fingerprint is ``source_name + external_id`` when an external_id is
+        given (the source's own stable reference), otherwise the content hash
+        itself — either way, re-importing the identical document updates the
+        existing row instead of duplicating it (ADR-016 extended, ADR-024).
+        """
+        fingerprint = f"{source_name}|{external_id}" if external_id else f"content|{content_hash}"
+        retrieved_at = retrieved_at or utc_now()
+        existing = self.connection.execute(
+            "SELECT id FROM external_documents WHERE fingerprint = ?", (fingerprint,)
+        ).fetchone()
+        if existing is None:
+            cursor = self.connection.execute(
+                "INSERT INTO external_documents (instrument_id, symbol, document_type, title,"
+                " published_at, source_name, source_tier, source_url, external_id,"
+                " content_hash, local_path, retrieved_at, fingerprint)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (instrument_id, symbol, document_type, title, published_at, source_name,
+                 source_tier, source_url, external_id, content_hash, local_path,
+                 retrieved_at, fingerprint),
+            )
+            document_id = cursor.lastrowid
+            was_new = True
+        else:
+            document_id = existing["id"]
+            self.connection.execute(
+                "UPDATE external_documents SET title = ?, published_at = ?, source_url = ?,"
+                " content_hash = ?, local_path = ?, retrieved_at = ? WHERE id = ?",
+                (title, published_at, source_url, content_hash, local_path, retrieved_at,
+                 document_id),
+            )
+            was_new = False
+        record = self.get(document_id)
+        record["_was_new"] = was_new
+        return record
+
+    def get(self, document_id: int) -> dict:
+        row = self.connection.execute(
+            "SELECT * FROM external_documents WHERE id = ?", (document_id,)
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"document {document_id} not found")
+        return dict(row)
+
+    def find_by_external_id(self, external_id: str) -> Optional[dict]:
+        """Look up a document by the external_id a user assigned to correlate
+        it with other records (e.g. a financial fact citing the filing it came
+        from). Deliberately independent of source_name: the fact and the
+        document it cites are commonly attributed to different named sources
+        (a data aggregator's number, an EGX filing) even when they share the
+        same external_id the user chose to link them."""
+        row = self.connection.execute(
+            "SELECT * FROM external_documents WHERE external_id = ? ORDER BY id LIMIT 1",
+            (external_id,),
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    def list_for_symbol(self, symbol: str, limit: int = 50) -> List[dict]:
+        rows = self.connection.execute(
+            "SELECT * FROM external_documents WHERE symbol = ?"
+            " ORDER BY published_at DESC, id DESC LIMIT ?",
+            (ledger.normalize_symbol(symbol), limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+class FinancialFactRepository(BaseRepository):
+    """Owns ``financial_facts`` — normalized statement line items."""
+
+    def add(self, instrument_id: int, symbol: str, period_end: str, period_type: str,
+            metric: str, value, source_name: str, currency: str = "EGP",
+            period_start: Optional[str] = None, source_document_id: Optional[int] = None,
+            source_tier: str = "IMPORT", source_url: Optional[str] = None,
+            published_at: Optional[str] = None, retrieved_at: Optional[str] = None) -> dict:
+        fingerprint = "|".join([symbol, period_end, period_type, metric, source_name])
+        retrieved_at = retrieved_at or utc_now()
+        value_text = to_text(to_decimal(value, "value"))
+        existing = self.connection.execute(
+            "SELECT id FROM financial_facts WHERE fingerprint = ?", (fingerprint,)
+        ).fetchone()
+        if existing is None:
+            cursor = self.connection.execute(
+                "INSERT INTO financial_facts (instrument_id, symbol, period_start, period_end,"
+                " period_type, metric, value, currency, source_document_id, source_name,"
+                " source_tier, source_url, published_at, retrieved_at, fingerprint, created_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (instrument_id, symbol, period_start, period_end, period_type, metric,
+                 value_text, currency, source_document_id, source_name, source_tier,
+                 source_url, published_at, retrieved_at, fingerprint, utc_now()),
+            )
+            fact_id = cursor.lastrowid
+            was_new = True
+        else:
+            fact_id = existing["id"]
+            self.connection.execute(
+                "UPDATE financial_facts SET value = ?, source_document_id = ?,"
+                " source_url = ?, published_at = ?, retrieved_at = ? WHERE id = ?",
+                (value_text, source_document_id, source_url, published_at, retrieved_at,
+                 fact_id),
+            )
+            was_new = False
+        record = self.get(fact_id)
+        record["_was_new"] = was_new
+        return record
+
+    def get(self, fact_id: int) -> dict:
+        row = self.connection.execute(
+            "SELECT * FROM financial_facts WHERE id = ?", (fact_id,)
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"financial fact {fact_id} not found")
+        return dict(row)
+
+    def list_for_symbol(self, symbol: str, limit: int = 100) -> List[dict]:
+        rows = self.connection.execute(
+            "SELECT * FROM financial_facts WHERE symbol = ?"
+            " ORDER BY period_end DESC, metric, id DESC LIMIT ?",
+            (ledger.normalize_symbol(symbol), limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+
+class IngestionRunRepository(BaseRepository):
+    """Owns ``ingestion_runs`` — an audit trail of every import attempt."""
+
+    def record(self, report) -> int:
+        cursor = self.connection.execute(
+            "INSERT INTO ingestion_runs (kind, provider, source, ok, failure_kind, error,"
+            " read_count, inserted_count, updated_count, duplicate_count, rejected_count,"
+            " rejected_json, started_at, completed_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (report.kind, report.provider, report.source, 1 if report.ok else 0,
+             report.failure_kind, report.error, report.read, report.inserted,
+             report.updated, report.duplicate, report.rejected_count,
+             _json([r.to_dict() for r in report.rejected]), report.started_at,
+             report.completed_at),
+        )
+        return cursor.lastrowid
+
+    def list(self, limit: int = 30, kind: Optional[str] = None) -> List[dict]:
+        sql = "SELECT * FROM ingestion_runs"
+        params: list = []
+        if kind:
+            sql += " WHERE kind = ?"
+            params.append(kind)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        rows = self.connection.execute(sql, params).fetchall()
+        records = []
+        for row in rows:
+            record = dict(row)
+            record["rejected"] = _unjson(record.pop("rejected_json"))
+            records.append(record)
+        return records
 
 
 class ResearchRunRepository(BaseRepository):
@@ -678,6 +875,9 @@ class Repositories:
         self.instruments = InstrumentRepository(connection)
         self.transactions = TransactionRepository(connection)
         self.prices = PriceRepository(connection)
+        self.documents = DocumentRepository(connection)
+        self.financial_facts = FinancialFactRepository(connection)
+        self.ingestion_runs = IngestionRunRepository(connection)
         self.research_runs = ResearchRunRepository(connection)
         self.agent_runs = AgentRunRepository(connection)
         self.disagreements = DisagreementRepository(connection)
