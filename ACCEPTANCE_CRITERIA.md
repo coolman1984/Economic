@@ -6,118 +6,120 @@ This file defines the minimum evidence required before a phase is considered com
 
 # Phase 1 — Absolute CLI Core
 
+**Status: PASSED** — verified on 2026-09-10 by the 117-test suite (`python -m pytest`), the documented CLI walkthrough, a full mock committee run, and one live run against the real Claude Code CLI. See `CHANGELOG.md` for the evidence summary.
+
 ## A. Repository and Structure
 
-- [ ] Source code follows the boundaries in `PROJECT_MAP.md`.
-- [ ] Runtime financial data is excluded from git.
-- [ ] No secrets are committed.
-- [ ] `README.md` contains setup and usage instructions.
-- [ ] `CHANGELOG.md` records the delivered milestone.
+- [x] Source code follows the boundaries in `PROJECT_MAP.md`.
+- [x] Runtime financial data is excluded from git.
+- [x] No secrets are committed.
+- [x] `README.md` contains setup and usage instructions.
+- [x] `CHANGELOG.md` records the delivered milestone.
 
 ## B. Database
 
-- [ ] SQLite database can be initialized from an empty state.
-- [ ] Schema versioning/migration mechanism exists.
-- [ ] Accounts persist after restart.
-- [ ] Transactions persist after restart.
-- [ ] Research runs and human decisions persist after restart.
-- [ ] Important financial edits are auditable.
+- [x] SQLite database can be initialized from an empty state.
+- [x] Schema versioning/migration mechanism exists.
+- [x] Accounts persist after restart.
+- [x] Transactions persist after restart.
+- [x] Research runs and human decisions persist after restart.
+- [x] Important financial edits are auditable.
 
 ## C. Ledger Correctness
 
-- [ ] Deposit increases cash by the exact amount.
-- [ ] Withdrawal decreases cash by the exact amount.
-- [ ] BUY decreases cash by price × quantity + fees.
-- [ ] Multiple BUY operations calculate the defined average-cost method correctly.
-- [ ] SELL increases cash by proceeds minus fees.
-- [ ] Partial SELL calculates realized P&L correctly.
-- [ ] SELL above current quantity is rejected.
-- [ ] Closed positions result in zero remaining quantity.
-- [ ] Rebuilding from stored transactions reproduces the same holdings.
+- [x] Deposit increases cash by the exact amount.
+- [x] Withdrawal decreases cash by the exact amount.
+- [x] BUY decreases cash by price × quantity + fees.
+- [x] Multiple BUY operations calculate the defined average-cost method correctly.
+- [x] SELL increases cash by proceeds minus fees.
+- [x] Partial SELL calculates realized P&L correctly.
+- [x] SELL above current quantity is rejected.
+- [x] Closed positions result in zero remaining quantity.
+- [x] Rebuilding from stored transactions reproduces the same holdings.
 
 ## D. Portfolio Valuation
 
-- [ ] Latest known price is used according to documented policy.
-- [ ] Market value is correct.
-- [ ] Unrealized P&L is correct.
-- [ ] Realized P&L is correct.
-- [ ] Total account equity is correct.
-- [ ] Multiple accounts remain separated.
-- [ ] Consolidated view equals the sum of included accounts.
-- [ ] Missing prices are visible, not silently guessed.
+- [x] Latest known price is used according to documented policy.
+- [x] Market value is correct.
+- [x] Unrealized P&L is correct.
+- [x] Realized P&L is correct.
+- [x] Total account equity is correct.
+- [x] Multiple accounts remain separated.
+- [x] Consolidated view equals the sum of included accounts.
+- [x] Missing prices are visible, not silently guessed.
 
 ## E. Simulation
 
-- [ ] BUY simulation returns expected post-trade cash and quantity.
-- [ ] SELL simulation validates available quantity.
-- [ ] Simulation returns resulting position weight.
-- [ ] Simulation cannot mutate transactions, balances, or positions.
-- [ ] Same inputs produce the same deterministic result.
+- [x] BUY simulation returns expected post-trade cash and quantity.
+- [x] SELL simulation validates available quantity.
+- [x] Simulation returns resulting position weight.
+- [x] Simulation cannot mutate transactions, balances, or positions.
+- [x] Same inputs produce the same deterministic result.
 
 ## F. Codex Adapter
 
-- [ ] `doctor` can detect whether Codex CLI is available.
-- [ ] Adapter supports non-interactive execution.
-- [ ] Timeout is enforced.
-- [ ] stdout/stderr and exit status are captured.
-- [ ] Structured output is normalized.
-- [ ] Malformed output is rejected.
-- [ ] Failure cannot modify portfolio state.
+- [x] `doctor` can detect whether Codex CLI is available.
+- [x] Adapter supports non-interactive execution.
+- [x] Timeout is enforced.
+- [x] stdout/stderr and exit status are captured.
+- [x] Structured output is normalized.
+- [x] Malformed output is rejected.
+- [x] Failure cannot modify portfolio state.
 
 ## G. Claude Adapter
 
-- [ ] `doctor` can detect whether Claude Code CLI is available.
-- [ ] Adapter supports non-interactive execution.
-- [ ] Timeout is enforced.
-- [ ] stdout/stderr and exit status are captured.
-- [ ] Structured output is normalized.
-- [ ] Malformed output is rejected.
-- [ ] Failure cannot modify portfolio state.
+- [x] `doctor` can detect whether Claude Code CLI is available.
+- [x] Adapter supports non-interactive execution.
+- [x] Timeout is enforced.
+- [x] stdout/stderr and exit status are captured.
+- [x] Structured output is normalized.
+- [x] Malformed output is rejected.
+- [x] Failure cannot modify portfolio state.
 
 ## H. Committee Workflow
 
-- [ ] Every committee task receives a unique run ID.
-- [ ] Portfolio snapshot is saved before analysis.
-- [ ] Codex independent analysis is generated without Claude's conclusion.
-- [ ] Claude independent analysis is generated without Codex's conclusion.
-- [ ] Both independent outputs are persisted before cross-review.
-- [ ] Codex critique of Claude is persisted.
-- [ ] Claude critique of Codex is persisted.
-- [ ] Exactly one cross-review round is used in Phase 1.
-- [ ] Final synthesis is structured and validated.
-- [ ] Final synthesis exposes uncertainty and missing data.
-- [ ] Final output requires human decision.
+- [x] Every committee task receives a unique run ID.
+- [x] Portfolio snapshot is saved before analysis.
+- [x] Codex independent analysis is generated without Claude's conclusion.
+- [x] Claude independent analysis is generated without Codex's conclusion.
+- [x] Both independent outputs are persisted before cross-review.
+- [x] Codex critique of Claude is persisted.
+- [x] Claude critique of Codex is persisted.
+- [x] Exactly one cross-review round is used in Phase 1.
+- [x] Final synthesis is structured and validated.
+- [x] Final synthesis exposes uncertainty and missing data.
+- [x] Final output requires human decision.
 
 ## I. Human Gate
 
-- [ ] User can record APPROVE.
-- [ ] User can record REJECT.
-- [ ] User can record HOLD.
-- [ ] User can record MODIFY with a note/change.
-- [ ] An APPROVE action does not create a market transaction automatically.
-- [ ] Actual execution can be recorded separately.
+- [x] User can record APPROVE.
+- [x] User can record REJECT.
+- [x] User can record HOLD.
+- [x] User can record MODIFY with a note/change.
+- [x] An APPROVE action does not create a market transaction automatically.
+- [x] Actual execution can be recorded separately.
 
 ## J. Audit and Reproducibility
 
-- [ ] A past run can be re-opened.
-- [ ] Past portfolio snapshot can be viewed.
-- [ ] Independent agent outputs can be viewed.
-- [ ] Critiques can be viewed.
-- [ ] Final synthesis can be viewed.
-- [ ] Human decision can be viewed.
-- [ ] Historical records do not silently change when current portfolio data changes.
+- [x] A past run can be re-opened.
+- [x] Past portfolio snapshot can be viewed.
+- [x] Independent agent outputs can be viewed.
+- [x] Critiques can be viewed.
+- [x] Final synthesis can be viewed.
+- [x] Human decision can be viewed.
+- [x] Historical records do not silently change when current portfolio data changes.
 
 ## K. Test Evidence
 
-- [ ] Unit tests cover ledger arithmetic.
-- [ ] Unit tests cover oversell protection.
-- [ ] Unit tests cover simulation non-mutation.
-- [ ] Unit tests cover malformed AI output.
-- [ ] Unit tests cover agent timeout/failure handling.
-- [ ] Integration test covers full mock committee flow.
-- [ ] Integration test proves persistence/reload.
-- [ ] Test command is documented.
-- [ ] All required tests pass on the target development machine.
+- [x] Unit tests cover ledger arithmetic.
+- [x] Unit tests cover oversell protection.
+- [x] Unit tests cover simulation non-mutation.
+- [x] Unit tests cover malformed AI output.
+- [x] Unit tests cover agent timeout/failure handling.
+- [x] Integration test covers full mock committee flow.
+- [x] Integration test proves persistence/reload.
+- [x] Test command is documented.
+- [x] All required tests pass on the target development machine.
 
 # Phase 2 — EGX Data Layer Gate
 
