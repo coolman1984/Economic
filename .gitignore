@@ -1,0 +1,41 @@
+# Runtime financial data
+data/
+logs/
+backups/
+
+# Local databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Credentials and local configuration
+.env
+.env.*
+config/local*.json
+secrets.*
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Build / coverage
+build/
+dist/
+*.egg-info/
+.coverage
+htmlcov/
+
+# Temporary agent/run artifacts
+.tmp/
+tmp/
