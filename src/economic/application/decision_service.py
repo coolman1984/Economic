@@ -61,6 +61,10 @@ class DecisionService:
         artifacts.write_json(artifact_module.HUMAN_DECISION, {
             "run_id": run["id"],
             "run_status": new_status,
+            # "Why did we decide this?" must include what the decision rested on.
+            "committee_mode": run.get("committee_mode"),
+            "data_quality_score": run.get("data_quality_score"),
+            "agreement_score": run.get("agreement_score"),
             "decisions": history,
             "note": (
                 "Recording a decision never places a broker order. A real execution "
@@ -70,6 +74,15 @@ class DecisionService:
 
         record = self.repos.decisions.get(decision_id)
         record["run_status"] = new_status
+        # Carry the run's integrity forward so the caller can warn the human that
+        # this decision rests on a degraded committee (ADR-021).
+        record["committee_mode"] = run.get("committee_mode")
+        record["committee_degraded"] = run.get("committee_mode") == "DEGRADED"
+        record["restricted_recommendation"] = None
+        if recommendation_id is not None:
+            decided = self.repos.recommendations.get(recommendation_id)
+            if decided.get("restricted"):
+                record["restricted_recommendation"] = decided.get("proposed_action")
         # An approval is a recorded intention, never an execution.
         record["created_transaction"] = rules.decision_creates_transaction(decision)
         return record

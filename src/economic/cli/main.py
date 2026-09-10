@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -272,6 +273,9 @@ def cmd_doctor(context: AppContext, args) -> int:
         },
         "mock_mode": context.config.mock_agents or bool(args.mock),
         "chair": context.config.chair,
+        "min_data_quality_for_action": context.config.min_data_quality_for_action,
+        "available_providers": [a["provider"] for a in adapters if a["available"]],
+        "committee_would_be_degraded": len([a for a in adapters if a["available"]]) < 2,
         "agents": adapters,
     }
 
@@ -291,8 +295,13 @@ def cmd_doctor(context: AppContext, args) -> int:
             [[a["provider"], "yes" if a["available"] else "no",
               a["path"] or "not found", a["version"] or "-"] for a in adapters],
         ))
-        if not any(a["available"] for a in adapters):
+        available = [a for a in adapters if a["available"]]
+        if not available:
             print("\nNo provider CLI was found. Use --mock to run the committee offline.")
+        elif len(available) < 2:
+            print(f"\nOnly one provider is available ({available[0]['provider']}). Any "
+                  "committee run will be recorded as DEGRADED: there is no second agent "
+                  "to cross-review, so actionable proposals will be restricted.")
 
     _print(payload, args, render)
     return EXIT_OK
@@ -575,14 +584,35 @@ def cmd_committee(context: AppContext, args) -> int:
     return EXIT_OK if result["run"]["status"] == decision_rules.READY_FOR_HUMAN else EXIT_ERROR
 
 
+def _render_committee_banner(run: dict, integrity: Optional[dict]) -> None:
+    """State plainly whether this was a real dual-agent committee."""
+    if not integrity:
+        return
+    if integrity.get("degraded"):
+        print()
+        print("!" * 72)
+        print("DEGRADED COMMITTEE — this was NOT a full dual-agent review.")
+        for reason in integrity.get("reasons", []):
+            print(f"  - {reason}")
+        print(f"  analyses: {integrity.get('analyst_count')}   "
+              f"cross-reviews: {integrity.get('critique_count')}")
+        print("Actionable proposals were restricted and confidence was capped.")
+        print("!" * 72)
+    else:
+        print(f"committee   FULL ({integrity.get('analyst_count')} independent analyses, "
+              f"{integrity.get('critique_count')} cross-reviews)")
+
+
 def _render_run(payload: dict, full: bool = False) -> None:
     run = payload["run"]
+    integrity = payload.get("committee_integrity")
     print(formatting.heading(f"Run {run['id']}"))
     print(f"question    {run['question']}")
     print(f"status      {run['status']}")
     print(f"mode        {run['mode']}   chair: {run['chair_provider'] or '-'}")
     print(f"created     {run['created_at']}")
     print(f"artifacts   {payload['artifact_dir']}")
+    _render_committee_banner(run, integrity)
 
     snapshot = run.get("portfolio_snapshot") or {}
     if snapshot:
@@ -605,13 +635,28 @@ def _render_run(payload: dict, full: bool = False) -> None:
     if synthesis:
         print(formatting.heading("Chair synthesis"))
         print(synthesis.get("summary", ""))
-        print(f"\ndata quality {synthesis.get('data_quality_score')}/100    "
-              f"agreement {synthesis.get('agreement_score')}/100")
+        agreement = run.get("agreement_score")
+        agreement_text = (
+            f"{agreement}/100" if agreement is not None
+            else "not measurable (fewer than two analyses)"
+        )
+        print(f"\ndata quality {run.get('data_quality_score')}/100    "
+              f"agreement {agreement_text}")
+        if synthesis.get("data_quality_score") != run.get("data_quality_score"):
+            print(f"  (the chair reported {synthesis.get('data_quality_score')}/100; the "
+                  "score above is the one the software calculated)")
         for recommendation in payload.get("recommendations", []):
             print(f"\n  #{recommendation['rank']} {recommendation['action']} "
                   f"{recommendation['symbol'] or '(portfolio-level)'}  "
                   f"confidence {recommendation['confidence']}  "
                   f"[recommendation id {recommendation['id']}]")
+            if recommendation.get("restricted"):
+                print(f"     RESTRICTED: the chair proposed "
+                      f"{recommendation['proposed_action']} at confidence "
+                      f"{recommendation['proposed_confidence']}. The evidence gate "
+                      f"downgraded it because:")
+                for reason in recommendation.get("restriction_reasons") or []:
+                    print(f"       - {reason}")
             if recommendation.get("thesis_summary"):
                 print(f"     why: {recommendation['thesis_summary']}")
             if recommendation.get("counterargument"):
@@ -671,6 +716,15 @@ def cmd_decide(context: AppContext, args) -> int:
                             args.modified_action, args.note)
 
     def render():
+        # The human must be reminded what they are deciding on, at the moment
+        # they decide it, not only when they first read the run.
+        if record.get("committee_mode") == "DEGRADED":
+            print("Note: this decision is recorded against a DEGRADED committee "
+                  "(no full dual-agent cross-review).")
+        if record.get("restricted_recommendation"):
+            print("Note: the recommendation you decided on was restricted by the "
+                  "evidence gate; the chair had proposed "
+                  f"{record['restricted_recommendation']}.")
         print(f"Decision recorded: {record['decision']} (id {record['id']})")
         print(f"Run status is now {record['run_status']}.")
         print(HUMAN_GATE_NOTICE)
@@ -705,9 +759,10 @@ def cmd_history(context: AppContext, args) -> int:
                   "economic committee --question \"...\" --mock")
             return
         print(formatting.table(
-            ["run id", "created", "mode", "status", "question"],
-            [[run["id"], run["created_at"], run["mode"], run["status"],
-              (run["question"][:60] + "...") if len(run["question"]) > 60 else run["question"]]
+            ["run id", "created", "mode", "committee", "status", "question"],
+            [[run["id"], run["created_at"], run["mode"], run.get("committee_mode", "UNKNOWN"),
+              run["status"],
+              (run["question"][:48] + "...") if len(run["question"]) > 48 else run["question"]]
              for run in runs],
         ))
 
@@ -776,6 +831,7 @@ KNOWN_ERRORS = (
     NotFoundError,
     AmountError,
     sqlite_db.DatabaseError,
+    sqlite3.DatabaseError,
     ValueError,
 )
 

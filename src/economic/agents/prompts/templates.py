@@ -169,15 +169,36 @@ Return exactly one JSON object with this shape:
 
 def chair_synthesis(question: str, context: dict, analyses: dict, critiques: dict,
                     simulations: Optional[list] = None,
-                    risk_review: Optional[dict] = None) -> str:
-    """Final synthesis prompt for the configurable chair provider."""
+                    risk_review: Optional[dict] = None,
+                    integrity: Optional[dict] = None) -> str:
+    """Final synthesis prompt for the configurable chair provider.
+
+    The committee-integrity block and the evidence-gate rules are also enforced
+    in code after this prompt returns. Stating them here helps the chair comply;
+    it is not what makes them true.
+    """
+    integrity = integrity or {}
     payload = {
+        "committee_integrity": integrity,
         "independent_analyses": analyses,
         "critiques": critiques,
         "deterministic_simulations": simulations or [],
         "deterministic_risk_review": risk_review or {},
     }
     committee = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    degraded_note = ""
+    if integrity.get("degraded"):
+        degraded_note = (
+            "\nTHIS COMMITTEE IS DEGRADED. "
+            + "; ".join(integrity.get("reasons", []))
+            + "\nDo not write as though a second analyst reviewed this work. Say plainly\n"
+            "that the cross-check did not happen, and keep confidence correspondingly low.\n"
+        )
+    if not integrity.get("agreement_is_measurable", True):
+        degraded_note += (
+            "\nagreement_score is NOT measurable here: fewer than two analyses exist.\n"
+            "Report 0 and explain that agreement could not be established.\n"
+        )
     return f"""You are the chair of an investment committee for a single private investor on
 the Egyptian Exchange (EGX). Two analysts worked independently and then critiqued
 each other. Your job is to synthesize their work into a ranked, honest proposal
@@ -193,6 +214,18 @@ Requirements:
 - The simulation and risk figures below are deterministic software output. Use
   them as given.
 
+EVIDENCE GATE (enforced in code after you answer, so proposing past it only
+wastes the recommendation):
+- An actionable action (BUY, ADD, REDUCE, SELL) on a security with no price
+  snapshot, or with a stale price, is automatically downgraded to WATCH.
+- If the deterministic portfolio data-quality score is below the configured
+  minimum, every actionable action is downgraded to WATCH.
+- If the committee is degraded, every actionable action is downgraded to WATCH.
+- Confidence is capped at the deterministic data-quality score whenever any of
+  the above applies.
+Propose HOLD, WATCH, or NO_ACTION where the evidence is not there, and put the
+missing evidence in unresolved_questions.
+{degraded_note}
 {SAFETY_RULES}
 QUESTION FROM THE INVESTOR:
 {question}

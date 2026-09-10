@@ -26,6 +26,15 @@ STAGE_INDEPENDENT = "INDEPENDENT_ANALYSIS"
 STAGE_CROSS_REVIEW = "CROSS_REVIEW"
 STAGE_SYNTHESIS = "SYNTHESIS"
 
+# A committee is only FULL when the dual-agent design actually happened: two
+# independent analyses and a completed cross-review round over both of them.
+# Anything less is DEGRADED and must be labelled as such everywhere it surfaces
+# (ADR-021). A degraded run is still shown to the human — it is never presented
+# as if a second agent had checked the work.
+COMMITTEE_FULL = "FULL"
+COMMITTEE_DEGRADED = "DEGRADED"
+REQUIRED_ANALYSTS = 2
+
 
 class OrchestratorError(RuntimeError):
     """The workflow cannot continue."""
@@ -35,6 +44,51 @@ def new_run_id(today: Optional[str] = None) -> str:
     """Human-sortable run identifier, e.g. ``run-2026-09-10-a1b2c3d4``."""
     stamp = today or date.today().isoformat()
     return f"run-{stamp}-{uuid.uuid4().hex[:8]}"
+
+
+@dataclass
+class CommitteeIntegrity:
+    """Whether this run really was a dual-agent committee.
+
+    ``agreement_score`` is deliberately not taken from the chair when fewer than
+    two analysts produced output: with one voice there is nothing to agree with,
+    so any number would be fabricated (ADR-021).
+    """
+
+    mode: str
+    analyst_count: int
+    critique_count: int
+    expected_providers: List[str] = field(default_factory=list)
+    analyst_providers: List[str] = field(default_factory=list)
+    critique_providers: List[str] = field(default_factory=list)
+    reasons: List[str] = field(default_factory=list)
+
+    @property
+    def degraded(self) -> bool:
+        return self.mode == COMMITTEE_DEGRADED
+
+    @property
+    def agreement_is_measurable(self) -> bool:
+        return self.analyst_count >= REQUIRED_ANALYSTS
+
+    def effective_agreement_score(self, chair_reported) -> Optional[int]:
+        """The agreement score the system will record, not the one claimed."""
+        if not self.agreement_is_measurable:
+            return None
+        return chair_reported
+
+    def to_dict(self) -> dict:
+        return {
+            "mode": self.mode,
+            "degraded": self.degraded,
+            "analyst_count": self.analyst_count,
+            "critique_count": self.critique_count,
+            "expected_providers": list(self.expected_providers),
+            "analyst_providers": list(self.analyst_providers),
+            "critique_providers": list(self.critique_providers),
+            "agreement_is_measurable": self.agreement_is_measurable,
+            "reasons": list(self.reasons),
+        }
 
 
 @dataclass
@@ -54,10 +108,15 @@ class CommitteeResult:
     failures: List[dict] = field(default_factory=list)
     agent_responses: List[AgentResponse] = field(default_factory=list)
     stopped_because: List[str] = field(default_factory=list)
+    integrity: Optional[CommitteeIntegrity] = None
 
     @property
     def ready_for_human(self) -> bool:
         return self.status == decision_rules.READY_FOR_HUMAN
+
+    @property
+    def degraded(self) -> bool:
+        return self.integrity is not None and self.integrity.degraded
 
 
 class Orchestrator:
@@ -153,6 +212,7 @@ class Orchestrator:
 
         if not result.analyses:
             result.status = decision_rules.FAILED
+            result.integrity = self._assess_integrity(result)
             result.stopped_because.append(
                 "no provider produced a valid independent analysis; nothing to synthesize"
             )
@@ -181,12 +241,17 @@ class Orchestrator:
                 "cross-review skipped: fewer than two valid independent analyses"
             )
 
-        # Stage 3 — collect material disagreements for the record.
+        # Stage 3 — collect material disagreements and judge committee integrity.
         result.status = decision_rules.DISAGREEMENT_CHECK
         result.disagreements = self._collect_disagreements(result)
         result.stopped_because.append(
             f"review-round limit reached ({self.review_rounds} of {MAX_REVIEW_ROUNDS})"
         )
+        result.integrity = self._assess_integrity(result)
+        if result.integrity.degraded:
+            result.stopped_because.append(
+                "committee is DEGRADED: " + "; ".join(result.integrity.reasons)
+            )
 
         # Stage 4 — chair synthesis.
         result.status = decision_rules.READY_FOR_SYNTHESIS
@@ -202,6 +267,7 @@ class Orchestrator:
         prompt = templates.chair_synthesis(
             question, context, result.analyses, result.critiques,
             simulations=context.get("simulations"), risk_review=context.get("risk_review"),
+            integrity=result.integrity.to_dict(),
         )
         response = self._run_stage(chair_provider, prompt, contracts.CHAIR_SYNTHESIS,
                                    "chair", STAGE_SYNTHESIS)
@@ -216,6 +282,41 @@ class Orchestrator:
 
         self._write_final(result, result.synthesis)
         return result
+
+    def _assess_integrity(self, result: CommitteeResult) -> CommitteeIntegrity:
+        """Decide whether this run is a full committee or a degraded one.
+
+        Called before synthesis so the chair can be told what it is chairing.
+        """
+        expected = sorted(self.adapters)
+        analysts = sorted(result.analyses)
+        reviewers = sorted(result.critiques)
+        reasons: List[str] = []
+
+        if len(analysts) < REQUIRED_ANALYSTS:
+            missing = [p for p in expected if p not in analysts]
+            reasons.append(
+                f"only {len(analysts)} of {REQUIRED_ANALYSTS} independent analyses are valid"
+                + (f" (no usable output from: {', '.join(missing)})" if missing else "")
+            )
+        if len(expected) < REQUIRED_ANALYSTS:
+            reasons.append(
+                f"only {len(expected)} provider(s) were enabled for this run"
+            )
+        if len(analysts) >= REQUIRED_ANALYSTS and len(reviewers) < REQUIRED_ANALYSTS:
+            reasons.append(
+                f"only {len(reviewers)} of {len(analysts)} analyses were cross-reviewed"
+            )
+
+        return CommitteeIntegrity(
+            mode=COMMITTEE_DEGRADED if reasons else COMMITTEE_FULL,
+            analyst_count=len(analysts),
+            critique_count=len(reviewers),
+            expected_providers=expected,
+            analyst_providers=analysts,
+            critique_providers=reviewers,
+            reasons=reasons,
+        )
 
     def _collect_disagreements(self, result: CommitteeResult) -> List[dict]:
         """Flatten reviewer-reported disagreements into explicit records."""
@@ -241,6 +342,9 @@ class Orchestrator:
             "mode": result.mode,
             "chair_provider": result.chair_provider,
             "contract_version": CONTRACT_VERSION,
+            "committee_integrity": (
+                result.integrity.to_dict() if result.integrity else None
+            ),
             "synthesis": synthesis,
             "disagreements": result.disagreements,
             "failures": result.failures,

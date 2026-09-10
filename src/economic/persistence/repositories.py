@@ -378,8 +378,21 @@ class ResearchRunRepository(BaseRepository):
 
     def set_snapshot(self, run_id: str, snapshot: dict) -> None:
         self.connection.execute(
-            "UPDATE research_runs SET portfolio_snapshot_json = ? WHERE id = ?",
-            (_json(snapshot), run_id),
+            "UPDATE research_runs SET portfolio_snapshot_json = ?, data_quality_score = ?"
+            " WHERE id = ?",
+            (_json(snapshot), (snapshot or {}).get("data_quality_score"), run_id),
+        )
+
+    def set_integrity(self, run_id: str, mode: str, integrity: dict, analyst_count: int,
+                      critique_count: int, agreement_score: Optional[int] = None,
+                      evidence_gate: Optional[dict] = None) -> None:
+        """Record whether the run was a full or degraded committee (ADR-021)."""
+        self.connection.execute(
+            "UPDATE research_runs SET committee_mode = ?, committee_integrity_json = ?,"
+            " analyst_count = ?, critique_count = ?, agreement_score = ?,"
+            " evidence_gate_json = ? WHERE id = ?",
+            (mode, _json(integrity), analyst_count, critique_count, agreement_score,
+             _json(evidence_gate), run_id),
         )
 
     def set_status(self, run_id: str, status: str, error: Optional[str] = None,
@@ -396,8 +409,15 @@ class ResearchRunRepository(BaseRepository):
         ).fetchone()
         if row is None:
             raise NotFoundError(f"research run {run_id} not found")
+        return self._to_record(row)
+
+    @staticmethod
+    def _to_record(row: sqlite3.Row) -> dict:
         record = dict(row)
         record["portfolio_snapshot"] = _unjson(record.pop("portfolio_snapshot_json"))
+        record["committee_integrity"] = _unjson(record.pop("committee_integrity_json"))
+        record["evidence_gate"] = _unjson(record.pop("evidence_gate_json"))
+        record["degraded"] = record.get("committee_mode") == "DEGRADED"
         return record
 
     def find(self, prefix: str) -> dict:
@@ -424,12 +444,7 @@ class ResearchRunRepository(BaseRepository):
         sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
         params.append(limit)
         rows = self.connection.execute(sql, params).fetchall()
-        result = []
-        for row in rows:
-            record = dict(row)
-            record["portfolio_snapshot"] = _unjson(record.pop("portfolio_snapshot_json"))
-            result.append(record)
-        return result
+        return [self._to_record(row) for row in rows]
 
 
 class AgentRunRepository(BaseRepository):
@@ -537,17 +552,29 @@ class RecommendationRepository(BaseRepository):
             thesis_summary: Optional[str] = None, counterargument: Optional[str] = None,
             invalidators: Optional[list] = None, risks: Optional[list] = None,
             portfolio_effect: Optional[dict] = None, evidence: Optional[list] = None,
-            instrument_id: Optional[int] = None) -> int:
+            instrument_id: Optional[int] = None, proposed_action: Optional[str] = None,
+            proposed_confidence: Optional[int] = None, restricted: bool = False,
+            restriction_reasons: Optional[list] = None) -> int:
+        """Persist one recommendation.
+
+        ``action``/``confidence`` are the values after the deterministic evidence
+        gate; ``proposed_action``/``proposed_confidence`` preserve what the chair
+        actually asked for, so a restriction is auditable rather than invisible.
+        ``data_quality_score`` is the deterministic score, never the chair's.
+        """
         cursor = self.connection.execute(
             "INSERT INTO recommendations (research_run_id, rank, instrument_id, symbol, action,"
             " confidence, data_quality_score, current_weight_pct, suggested_weight_pct,"
             " thesis_summary, counterargument, invalidators_json, risks_json,"
-            " portfolio_effect_json, evidence_json, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " portfolio_effect_json, evidence_json, created_at, proposed_action,"
+            " proposed_confidence, restricted, restriction_reasons_json)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (research_run_id, rank, instrument_id, symbol, action, confidence,
              data_quality_score, current_weight_pct, suggested_weight_pct, thesis_summary,
              counterargument, _json(invalidators), _json(risks), _json(portfolio_effect),
-             _json(evidence), utc_now()),
+             _json(evidence), utc_now(), proposed_action or action,
+             proposed_confidence if proposed_confidence is not None else confidence,
+             1 if restricted else 0, _json(restriction_reasons)),
         )
         return cursor.lastrowid
 
@@ -559,8 +586,10 @@ class RecommendationRepository(BaseRepository):
         records = []
         for row in rows:
             record = dict(row)
-            for key in ("invalidators", "risks", "portfolio_effect", "evidence"):
+            for key in ("invalidators", "risks", "portfolio_effect", "evidence",
+                        "restriction_reasons"):
                 record[key] = _unjson(record.pop(f"{key}_json"))
+            record["restricted"] = bool(record.get("restricted"))
             records.append(record)
         return records
 

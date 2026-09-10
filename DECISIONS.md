@@ -191,3 +191,23 @@ This file records important project decisions and why they exist. Add new entrie
 **Reason:** `economic portfolio show --json` is what a user naturally types. Requiring `economic --json portfolio show` is a needless failure.
 
 **Consequence:** The shared option parser uses suppressed defaults so the unused copy cannot overwrite the value the user gave on the other side.
+
+---
+
+## ADR-020 — The Evidence Gate Is Code, Not a Prompt
+
+**Decision:** Before a chair's ranked action is recorded as a recommendation, a deterministic gate in `domain/risk.py` decides whether the evidence supports it. An actionable action (BUY, ADD, REDUCE, SELL) is downgraded to WATCH when the named security has no price snapshot or is marked at a stale price, when the deterministic portfolio data-quality score is below the configured floor, or when the committee was degraded. Confidence is capped at the data-quality score whenever evidence is thin. The proposed action and confidence are preserved alongside the restricted ones.
+
+**Reason:** Phase 1 already told agents in the prompt not to act on missing data. A prompt is a request, not a control. Testing showed a chair could return `BUY` at confidence 95 on a security with no price at all, and the system stored it as a fully actionable recommendation. Anything that protects money has to be enforced where a model cannot reach it.
+
+**Consequence:** The system will not present an actionable recommendation it cannot support with priced, fresh data from a complete committee. Nothing is deleted: the human sees exactly what was proposed, what it was reduced to, and why. The human can still approve a restricted recommendation, because the human remains the authority (ADR-008). A BUY candidate that the system holds no price for can never surface as actionable until a price snapshot is recorded for it — this is intended.
+
+---
+
+## ADR-021 — A Committee Is FULL Only If It Actually Happened
+
+**Decision:** Every run records `committee_mode` as FULL or DEGRADED. FULL requires two valid independent analyses and a completed cross-review of both. Anything less — a provider that failed, a CLI that is not installed, a cross-review that did not run, or a configuration with one provider enabled — is DEGRADED, with the reasons recorded. When fewer than two analyses exist, the chair's `agreement_score` is not recorded at all, because there was no second voice to agree with.
+
+**Reason:** With one agent unavailable, a run still reached the human gate looking exactly like a dual-agent committee, and the chair reported an agreement score computed against nobody. The entire value of the design is the independent cross-check; a run without it must not inherit its credibility.
+
+**Consequence:** Degradation is visible in the database, the run artifacts, the history listing, the run view, and again when the human records a decision. A degraded committee cannot emit actionable recommendations (ADR-020) and its confidence is capped independently of data quality, because complete price data does not replace a missing reviewer. Runs recorded before this rule existed are labelled `UNKNOWN` rather than retroactively called full.

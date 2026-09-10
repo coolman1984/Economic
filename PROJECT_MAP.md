@@ -33,7 +33,7 @@ Economic/
 │       │   ├── money.py             # exact decimal arithmetic
 │       │   ├── ledger.py            # transaction semantics and validation
 │       │   ├── portfolio.py         # holdings, cost, P&L, valuation, snapshot
-│       │   ├── risk.py              # portfolio rules and data-quality scoring
+│       │   ├── risk.py              # portfolio rules, data quality, evidence gate
 │       │   ├── simulation.py        # deterministic what-if engine
 │       │   └── decisions.py         # decision vocabulary and run state machine
 │       │
@@ -48,7 +48,8 @@ Economic/
 │       │   ├── sqlite_db.py         # connection, migration runner, backup
 │       │   ├── repositories.py      # the only SQL in the project
 │       │   └── migrations/
-│       │       └── 001_initial.sql
+│       │       ├── 001_initial.sql
+│       │       └── 002_committee_integrity_and_gate.sql
 │       │
 │       ├── agents/
 │       │   ├── contracts.py         # versioned output contracts
@@ -80,11 +81,14 @@ Economic/
 │   │   ├── test_agent_contracts.py
 │   │   ├── test_adapters.py
 │   │   ├── test_decisions.py
+│   │   ├── test_evidence_gate.py
+│   │   ├── test_committee_integrity.py
 │   │   └── test_persistence.py
 │   ├── integration/
 │   │   ├── test_committee_workflow.py
 │   │   ├── test_persistence_reload.py
 │   │   ├── test_human_gate.py
+│   │   ├── test_hardening.py
 │   │   └── test_cli.py
 │   └── fixtures/
 │
@@ -130,7 +134,10 @@ Owns transaction semantics and accounting invariants.
 Owns deterministic holdings, value, cost, P&L, and allocation calculations.
 
 ### `domain/risk.py`
-Owns portfolio-rule and risk-limit evaluation.
+Owns portfolio-rule and risk-limit evaluation, the deterministic data-quality
+score, and the **evidence gate** (ADR-020) that decides whether a proposed action
+may stand as actionable. The gate is deliberately in the domain layer: it is a
+rule about evidence, not a prompt, and no adapter or model can reach it.
 
 ### `domain/simulation.py`
 Owns deterministic what-if calculations.
@@ -139,7 +146,8 @@ Owns deterministic what-if calculations.
 Owns decision status/state rules, not AI reasoning.
 
 ### `agents/orchestrator.py`
-Owns multi-agent workflow and stopping conditions.
+Owns multi-agent workflow, stopping conditions, and **committee integrity**
+(ADR-021) — whether a run was a full dual-agent committee or a degraded one.
 
 ### `agents/codex_adapter.py`
 Only place that knows Codex CLI command details.
@@ -203,7 +211,9 @@ Once implementation begins, changes to these areas require focused tests:
 - agent contracts;
 - decision state machine;
 - audit history;
-- simulation math.
+- simulation math;
+- the evidence gate in `domain/risk.py`;
+- committee-integrity assessment in `agents/orchestrator.py`.
 
 ## Runtime Data
 

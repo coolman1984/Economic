@@ -19,6 +19,45 @@ def test_migrations_are_idempotent(home):
     assert sqlite_db.migrate(connection) == []
 
 
+def test_migration_002_upgrades_a_v1_database_without_losing_data(home, tmp_path):
+    """Personal data must survive a schema change (DATA_MODEL §10)."""
+    import shutil
+
+    staging = tmp_path / "v1"
+    staging.mkdir()
+    shutil.copy(sqlite_db.MIGRATIONS_DIR / "001_initial.sql", staging / "001_initial.sql")
+    real_dir = sqlite_db.MIGRATIONS_DIR
+    database = home / "data" / "legacy.db"
+    try:
+        sqlite_db.MIGRATIONS_DIR = staging
+        connection = sqlite_db.initialize(database)
+        assert sqlite_db.schema_version(connection) == 1
+        connection.execute(
+            "INSERT INTO research_runs (id, created_at, question, scope_type, status, mode,"
+            " contract_version) VALUES ('run-legacy', '2026-01-01', 'old question',"
+            " 'ACCOUNT', 'READY_FOR_HUMAN', 'live', '1.0')")
+        connection.execute(
+            "INSERT INTO recommendations (research_run_id, rank, action, confidence,"
+            " created_at) VALUES ('run-legacy', 1, 'BUY', 88, '2026-01-01')")
+        connection.close()
+    finally:
+        sqlite_db.MIGRATIONS_DIR = real_dir
+
+    upgraded = sqlite_db.initialize(database)
+    assert sqlite_db.schema_version(upgraded) == len(sqlite_db.available_migrations())
+    assert sqlite_db.integrity_check(upgraded) is None
+
+    run = dict(upgraded.execute("SELECT * FROM research_runs").fetchone())
+    assert run["question"] == "old question"
+    # A run recorded before integrity was tracked must not be claimed as FULL.
+    assert run["committee_mode"] == "UNKNOWN"
+
+    recommendation = dict(upgraded.execute("SELECT * FROM recommendations").fetchone())
+    assert recommendation["action"] == "BUY"
+    assert recommendation["confidence"] == 88
+    assert recommendation["restricted"] == 0
+
+
 def test_backup_produces_a_readable_copy(home):
     connection = sqlite_db.initialize(home / "data" / "test.db")
     Repositories(connection).accounts.add("Backed Up")

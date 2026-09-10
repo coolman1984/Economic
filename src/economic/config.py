@@ -21,6 +21,9 @@ DEFAULT_CONFIG = {
     "backups_dir": "backups",
     "currency": "EGP",
     "stale_price_after_days": 5,
+    # Deterministic floor: below this portfolio data-quality score no proposal
+    # may stand as actionable, whatever a model recommends (ADR-020).
+    "min_data_quality_for_action": 50,
     "agents": {
         "mock": False,
         "timeout_seconds": 300,
@@ -108,6 +111,11 @@ class Config:
     @property
     def stale_price_after_days(self) -> int:
         return int(self.values.get("stale_price_after_days", 5))
+
+    @property
+    def min_data_quality_for_action(self) -> int:
+        """Data-quality floor enforced by the evidence gate."""
+        return int(self.values.get("min_data_quality_for_action", 50))
 
     @property
     def portfolio_rules(self) -> dict:

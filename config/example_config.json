@@ -3,6 +3,7 @@
   "database": "data/economic.db",
   "currency": "EGP",
   "stale_price_after_days": 5,
+  "min_data_quality_for_action": 50,
   "agents": {
     "mock": false,
     "timeout_seconds": 300,

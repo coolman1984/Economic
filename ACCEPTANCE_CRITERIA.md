@@ -6,7 +6,7 @@ This file defines the minimum evidence required before a phase is considered com
 
 # Phase 1 — Absolute CLI Core
 
-**Status: PASSED** — verified on 2026-09-10 by the 117-test suite (`python -m pytest`), the documented CLI walkthrough, a full mock committee run, and one live run against the real Claude Code CLI. See `CHANGELOG.md` for the evidence summary.
+**Status: PASSED, hardened** — verified on 2026-09-10 by the 165-test suite (`python -m pytest`), the documented CLI walkthrough, full and degraded mock committee runs, and live runs against the real Claude Code CLI. A hardening pass then closed four defects found by adversarial review; see `CHANGELOG.md` for findings and evidence.
 
 ## A. Repository and Structure
 
@@ -78,6 +78,12 @@ This file defines the minimum evidence required before a phase is considered com
 
 ## H. Committee Workflow
 
+- [x] A run with fewer than two cross-reviewed analyses is recorded as DEGRADED (ADR-021).
+- [x] A degraded committee is labelled in the database, run view, history, and at decision time.
+- [x] An agreement score is not recorded when fewer than two analyses exist.
+- [x] Missing, stale, or unpriced data programmatically restricts actionable recommendations (ADR-020).
+- [x] A restriction records the proposed action, the restricted action, and the reasons.
+- [x] The deterministic data-quality score is stored, never the chair's own claim.
 - [x] Every committee task receives a unique run ID.
 - [x] Portfolio snapshot is saved before analysis.
 - [x] Codex independent analysis is generated without Claude's conclusion.

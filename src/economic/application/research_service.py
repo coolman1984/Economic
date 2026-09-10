@@ -130,7 +130,7 @@ class ResearchService:
         result = orchestrator.run_committee(run_id, question, context_payload,
                                             mode="mock" if use_mock else "live")
 
-        self._persist_result(run_id, result)
+        self._persist_result(run_id, result, snapshot)
         return self.get_run(run_id)
 
     def _build_context(self, question: str, snapshot: dict, as_of: str,
@@ -165,8 +165,17 @@ class ResearchService:
             ],
         }
 
-    def _persist_result(self, run_id: str, result: CommitteeResult) -> None:
-        """Store agent runs, disagreements, recommendations, and the final status."""
+    def _persist_result(self, run_id: str, result: CommitteeResult, snapshot: dict) -> None:
+        """Store agent runs, disagreements, recommendations, and the final status.
+
+        Two deterministic overrides happen here, and only here:
+        * committee integrity decides the recorded ``agreement_score`` — a score
+          the chair reported over fewer than two analyses is not recorded, since
+          there was nothing to agree with (ADR-021);
+        * the evidence gate decides the recorded ``action`` and ``confidence`` of
+          every ranked proposal (ADR-020).
+        The chair's own numbers stay preserved verbatim in the run artifacts.
+        """
         raw_dir = self.config.runs_dir / run_id / "raw"
         with sqlite_db.transaction(self.context.connection):
             for response in result.agent_responses:
@@ -199,20 +208,44 @@ class ResearchService:
                     evidence=item.get("required_evidence"),
                 )
 
+            integrity = result.integrity
+            gate = risk.build_evidence_gate(
+                snapshot,
+                min_data_quality=self.config.min_data_quality_for_action,
+                committee_degraded=bool(integrity and integrity.degraded),
+                committee_reasons=list(integrity.reasons) if integrity else [],
+            )
+            deterministic_quality = snapshot.get("data_quality_score")
+
+            if integrity is not None:
+                agreement = integrity.effective_agreement_score(
+                    (result.synthesis or {}).get("agreement_score")
+                )
+                self.repos.research_runs.set_integrity(
+                    run_id, integrity.mode, integrity.to_dict(), integrity.analyst_count,
+                    integrity.critique_count, agreement, gate.to_dict(),
+                )
+
             if result.synthesis:
-                for action in result.synthesis.get("ranked_actions", []):
+                proposals = result.synthesis.get("ranked_actions", [])
+                for gated in risk.gate_actions(proposals, gate):
+                    action = proposals[gated.proposed_index]
                     self.repos.recommendations.add(
                         research_run_id=run_id,
-                        rank=action.get("rank") or 1,
-                        action=action.get("action"),
-                        symbol=action.get("symbol"),
-                        confidence=action.get("confidence"),
-                        data_quality_score=result.synthesis.get("data_quality_score"),
+                        rank=gated.rank,
+                        action=gated.action,
+                        symbol=gated.symbol,
+                        confidence=gated.confidence,
+                        proposed_action=gated.proposed_action,
+                        proposed_confidence=gated.proposed_confidence,
+                        restricted=gated.restricted,
+                        restriction_reasons=gated.reasons or None,
+                        data_quality_score=deterministic_quality,
                         suggested_weight_pct=(
                             None if action.get("suggested_weight_pct") is None
                             else str(action["suggested_weight_pct"])
                         ),
-                        current_weight_pct=self._current_weight(result, action.get("symbol")),
+                        current_weight_pct=self._current_weight(result, gated.symbol),
                         thesis_summary=" ".join(action.get("why", [])) or None,
                         counterargument=action.get("strongest_counterargument"),
                         invalidators=action.get("invalidators"),
@@ -281,6 +314,10 @@ class ResearchService:
             "decisions": self.repos.decisions.list_for_run(run_id),
             "simulations": self.repos.simulations.list_for_run(run_id),
             "synthesis": final.get("synthesis"),
+            "committee_integrity": (
+                run.get("committee_integrity") or final.get("committee_integrity")
+            ),
+            "evidence_gate": run.get("evidence_gate"),
             "failures": final.get("failures", []),
             "stopped_because": final.get("stopped_because", []),
             "artifact_dir": str(artifacts.directory),

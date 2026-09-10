@@ -2,6 +2,110 @@
 
 All meaningful project changes should be recorded here.
 
+## 2026-09-10 — Phase 1 Hardening Pass
+
+A strict review of the delivered Phase 1 against `ARCHITECTURE.md` and
+`ACCEPTANCE_CRITERIA.md`, before any Phase 2 work. Four defects were found by
+adversarial probing and fixed. No features were added, and the deterministic
+accounting core (`ledger.py`, `portfolio.py`, `simulation.py`, `decisions.py`)
+was not modified.
+
+### Findings
+
+**F1 (P0) — A single surviving agent looked like a full committee.**
+With Codex unavailable, a run reached READY_FOR_HUMAN with no marker of any
+kind, and the chair reported an agreement score of 63/100 computed against an
+analyst that never spoke. The whole value of the design is the independent
+cross-check; a run without one was inheriting its credibility.
+
+**F2 (P0) — Missing and stale data were governed only by the prompt.**
+A chair returning `BUY GHOST` at confidence 95 for a security with no price
+snapshot at all had that stored verbatim as a fully actionable recommendation.
+The prompt asked models not to do this; nothing stopped them.
+
+**F3 (P1) — The chair could overwrite deterministic truth.**
+The chair's self-reported `data_quality_score` (99) was persisted on the
+recommendation rows in place of the deterministic score (35), directly against
+ADR-002.
+
+**F4 (P1) — Duplicate ranks crashed a completed run.**
+Two ranked actions sharing `rank: 1` raised an uncaught
+`sqlite3.IntegrityError` after all agent work was done, losing the run and
+showing the user a traceback.
+
+### Fixes
+
+- **Committee integrity (ADR-021).** Every run is recorded as FULL or DEGRADED.
+  FULL requires two valid independent analyses and a completed cross-review of
+  both; a missing CLI, a failed provider, an incomplete review round, or a
+  single enabled provider all produce DEGRADED with specific reasons. When
+  fewer than two analyses exist, the agreement score is recorded as NULL rather
+  than accepting a fabricated number. Degradation is surfaced in the run view,
+  in `economic history`, in the run artifacts, and again when a decision is
+  recorded.
+- **Evidence gate (ADR-020).** A deterministic gate in `domain/risk.py` now
+  re-decides every ranked action before it is stored. Actionable actions (BUY,
+  ADD, REDUCE, SELL) are downgraded to WATCH when the security has no price
+  snapshot, no price evidence, or a stale price; when the deterministic
+  data-quality score is below a configurable floor (`min_data_quality_for_action`,
+  default 50); or when the committee was degraded. Confidence is capped at the
+  data-quality score on thin evidence, and separately at 50 for a degraded
+  committee, because complete price data does not replace a missing reviewer.
+- **Deterministic scores win.** The recommendation rows and the run row now
+  store the software's data-quality score. The chair's own claims remain
+  verbatim in the run artifacts, so the difference is auditable.
+- **Ranks are normalized** to 1..n by the gate, ordered by the chair's stated
+  rank then original position, so duplicate or missing ranks can no longer break
+  persistence. The CLI also no longer surfaces a database error as a traceback.
+- **`doctor` warns in advance** when only one provider is available, since every
+  run will then be degraded.
+
+### Preserved deliberately
+
+- A degraded run still reaches the human — it is labelled, not suppressed.
+- A restricted recommendation can still be approved. The gate limits what the
+  *software* asserts, never the human's authority (ADR-008).
+- APPROVE still creates no transaction and no broker order.
+- Ledger, valuation, and simulation behaviour is byte-for-byte unchanged.
+
+### Schema
+
+Migration `002_committee_integrity_and_gate.sql`, additive only: committee mode,
+integrity, analyst/critique counts, deterministic data-quality and agreement
+scores, and the evidence gate on `research_runs`; proposed action, proposed
+confidence, restricted flag, and restriction reasons on `recommendations`. Runs
+recorded before this migration are labelled `UNKNOWN` rather than being
+retroactively claimed as full committees. Verified by upgrading a populated v1
+database with no data loss.
+
+### Verified
+
+- `python -m pytest` — **165 passed** (117 before, 48 added).
+- New suites: `tests/unit/test_evidence_gate.py` (21),
+  `tests/unit/test_committee_integrity.py` (10),
+  `tests/integration/test_hardening.py` (14), plus CLI visibility and migration
+  regressions.
+- Every original test still passes unmodified: no behavioural regression.
+- Re-ran the adversarial probes that found F1-F4; all four are now closed.
+- Live run against the real Claude Code CLI with Codex absent: recorded
+  DEGRADED, agreement reported as not measurable, the actionable proposal
+  downgraded to WATCH, and the chair's own summary independently described the
+  degradation.
+- Accounting walkthrough re-verified: average cost 55.10, realized P&L 1,480,
+  equity 103,470; simulation left the ledger identical; oversell rejected;
+  APPROVE created no transaction.
+
+### Decisions
+
+- ADR-020 the evidence gate is code, not a prompt.
+- ADR-021 a committee is FULL only if it actually happened.
+
+### Phase 1 verdict
+
+**Ready to merge.** Phase 2 (EGX data layer) may begin.
+
+---
+
 ## 2026-09-10 — Phase 1 Delivered: Absolute CLI Core
 
 ### Added

@@ -109,6 +109,42 @@ def test_committee_decide_and_history_round_trip(run):
     assert any(entry["action"] == "HUMAN_DECISION" for entry in audit)
 
 
+def test_doctor_warns_when_only_one_provider_is_available(run, monkeypatch):
+    run("init")
+    report = json_run(run, "doctor", "--mock")
+    assert report["committee_would_be_degraded"] is False   # both mocks available
+    assert report["min_data_quality_for_action"] == 50
+
+
+def test_the_cli_labels_a_degraded_committee(run, home, monkeypatch):
+    """A user reading the terminal must see that no second agent checked this."""
+    from economic.agents import base_adapter
+    from economic.agents.mock_adapter import MockAdapter
+    from economic.application import research_service as research_module
+
+    monkeypatch.setattr(research_module, "build_adapters", lambda *a, **k: {
+        "codex": MockAdapter("codex", failure_kind=base_adapter.TIMEOUT),
+        "claude": MockAdapter("claude")})
+
+    run("init")
+    run("account", "add", "--name", "Main")
+    run("cash", "deposit", "--account", "Main", "--amount", "100000")
+    run("trade", "buy", "--account", "Main", "--symbol", "COMI", "--qty", "100", "--price", "50")
+    run("price", "set", "--symbol", "COMI", "--price", "60")
+
+    output = run("committee", "--question", "What now?", "--account", "Main", "--mock").out
+    assert "DEGRADED COMMITTEE" in output
+    assert "NOT a full dual-agent review" in output
+    assert "agreement not measurable" in output
+
+    listing = run("history").out
+    assert "DEGRADED" in listing
+
+    run_id = json_run(run, "history")[0]["id"]
+    decided = run("decide", "--run", run_id, "--decision", "HOLD").out
+    assert "DEGRADED committee" in decided
+
+
 def test_demo_seed_uses_clearly_fictional_symbols(run):
     run("init")
     summary = json_run(run, "demo", "seed")

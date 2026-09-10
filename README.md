@@ -166,6 +166,8 @@ result is labelled `MOCK` and must never be read as investment analysis. Use
 
 ## What the software guarantees
 
+These are enforced in code and covered by tests, not requested in prompts.
+
 - Cash, quantities, average cost, P&L, weights, and simulations are calculated
   by deterministic code and are never taken from model prose.
 - A SELL larger than the holding, or a withdrawal larger than the cash balance,
@@ -175,8 +177,40 @@ result is labelled `MOCK` and must never be read as investment analysis. Use
   than marked at a guessed price.
 - Model output is rejected unless it validates against a versioned contract.
 - A provider failure is recorded, never replaced with an invented result.
+- **A run with fewer than two cross-reviewed analyses is recorded as a DEGRADED
+  committee** and is never presented as a full dual-agent review.
+- **An actionable recommendation cannot stand on missing, stale, or unpriced
+  data** — the evidence gate downgrades it and says why.
 - Recording APPROVE never creates a transaction or a broker order.
 - Past runs keep the portfolio snapshot as it was at the time.
+
+### Degraded committees
+
+A committee is FULL only when both agents produced an independent analysis and
+both were cross-reviewed. If a provider CLI is missing, fails, times out, or
+returns invalid output, the run is marked DEGRADED — in the database, in the run
+view, in `economic history`, and again when you record your decision.
+
+A degraded run still reaches you. It simply never pretends a second agent
+checked the work: its agreement score is recorded as *not measurable*, its
+actionable proposals are downgraded to WATCH, and its confidence is capped.
+
+### The evidence gate
+
+Before a proposal is stored as a recommendation, the software re-decides it:
+
+| Situation | Effect |
+| --- | --- |
+| The security has no price snapshot | BUY/ADD/REDUCE/SELL is downgraded to WATCH |
+| The security is marked at a stale price | downgraded to WATCH |
+| Portfolio data quality is below the floor (default 50/100) | every actionable action is downgraded |
+| The committee was degraded | every actionable action is downgraded |
+| Any of the above | confidence is capped at the data-quality score |
+
+Nothing is hidden: the run shows what the chair proposed, what it was reduced
+to, and the exact reason. You can still approve a restricted recommendation —
+you remain the decision maker — but you will always be told what you are
+approving. Set `min_data_quality_for_action` in your config to change the floor.
 
 ## Tests
 
