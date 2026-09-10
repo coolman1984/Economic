@@ -184,7 +184,20 @@ market_context_reference_optional
 contract_version
 completed_at_optional
 error_optional
+committee_mode                 -- FULL | DEGRADED | UNKNOWN (ADR-021)
+committee_integrity_json
+analyst_count
+critique_count
+data_quality_score             -- deterministic, never the chair's own number
+agreement_score_optional       -- NULL when fewer than two analyses existed
+evidence_gate_json             -- the gate the run's actions were judged against
 ```
+
+`committee_mode` records whether the dual-agent design actually happened. It is
+not a run *state* (those are in `status`); a run can be READY_FOR_HUMAN and
+DEGRADED at the same time. `agreement_score` is NULL rather than zero when
+agreement was not measurable, so "not measured" is distinguishable from
+"measured as no agreement".
 
 ### agent_runs
 
@@ -240,9 +253,13 @@ id
 research_run_id
 rank
 instrument_id_optional
-action
-confidence
-data_quality_score
+action                         -- after the evidence gate (ADR-020)
+confidence                     -- after the evidence gate's confidence cap
+proposed_action                -- what the chair actually asked for
+proposed_confidence
+restricted                     -- 1 when the gate downgraded the action
+restriction_reasons_json       -- the deterministic reasons it was downgraded
+data_quality_score             -- deterministic, never the chair's own number
 current_weight_optional
 suggested_weight_optional
 thesis_summary
@@ -300,6 +317,22 @@ expected_vs_actual_json
 lessons_json
 created_at
 ```
+
+## 4a. Deterministic Overrides
+
+Two fields on a research run and two on every recommendation are decided by
+software after the model has answered, and the model cannot influence them:
+
+| Field | Decided by | Rule |
+| --- | --- | --- |
+| `research_runs.committee_mode` | orchestrator | FULL only when two analyses were cross-reviewed |
+| `research_runs.agreement_score` | orchestrator | NULL when fewer than two analyses exist |
+| `research_runs.data_quality_score` | portfolio snapshot | pricing completeness and freshness |
+| `recommendations.action` / `confidence` | evidence gate | downgraded and capped when evidence is thin |
+
+The model's own claims are never discarded: they stay verbatim in the run
+artifacts under `data/runs/<run-id>/`, so the difference between what was
+proposed and what the system recorded is always auditable.
 
 ## 5. Audit Log
 

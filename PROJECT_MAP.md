@@ -2,7 +2,9 @@
 
 This file is the repository navigation source of truth. Keep it updated whenever module boundaries change.
 
-## Planned Repository Structure
+## Repository Structure
+
+Phase 1 is implemented. Paths below marked `later` do not exist yet.
 
 ```text
 Economic/
@@ -20,59 +22,84 @@ Economic/
 ├── ACCEPTANCE_CRITERIA.md
 ├── DECISIONS.md
 ├── CHANGELOG.md
+├── pyproject.toml
 │
 ├── src/
 │   └── economic/
+│       ├── __init__.py              # version and contract/engine version constants
+│       ├── config.py                # configuration resolution and runtime paths
+│       │
 │       ├── domain/
-│       │   ├── ledger.py
-│       │   ├── portfolio.py
-│       │   ├── risk.py
-│       │   ├── simulation.py
-│       │   └── decisions.py
+│       │   ├── money.py             # exact decimal arithmetic
+│       │   ├── ledger.py            # transaction semantics and validation
+│       │   ├── portfolio.py         # holdings, cost, P&L, valuation, snapshot
+│       │   ├── risk.py              # portfolio rules, data quality, evidence gate
+│       │   ├── simulation.py        # deterministic what-if engine
+│       │   └── decisions.py         # decision vocabulary and run state machine
 │       │
 │       ├── application/
+│       │   ├── context.py           # config + database + repositories
 │       │   ├── portfolio_service.py
 │       │   ├── research_service.py
 │       │   ├── simulation_service.py
 │       │   └── decision_service.py
 │       │
 │       ├── persistence/
-│       │   ├── sqlite_db.py
-│       │   ├── repositories.py
+│       │   ├── sqlite_db.py         # connection, migration runner, backup
+│       │   ├── repositories.py      # the only SQL in the project
 │       │   └── migrations/
+│       │       ├── 001_initial.sql
+│       │       └── 002_committee_integrity_and_gate.sql
 │       │
 │       ├── agents/
-│       │   ├── contracts.py
-│       │   ├── codex_adapter.py
-│       │   ├── claude_adapter.py
-│       │   ├── orchestrator.py
-│       │   ├── prompts/
-│       │   └── validators.py
-│       │
-│       ├── data_providers/
-│       │   ├── base.py
-│       │   ├── market_data.py
-│       │   ├── disclosures.py
-│       │   ├── financials.py
-│       │   └── news.py
+│       │   ├── contracts.py         # versioned output contracts
+│       │   ├── validators.py        # raw output -> validated payload
+│       │   ├── base_adapter.py      # process execution and failure states
+│       │   ├── codex_adapter.py     # Codex CLI details only
+│       │   ├── claude_adapter.py    # Claude Code CLI details only
+│       │   ├── mock_adapter.py      # offline deterministic adapter
+│       │   ├── orchestrator.py      # workflow, stages, stopping conditions
+│       │   ├── artifacts.py         # run directory on disk
+│       │   └── prompts/
+│       │       └── templates.py     # every prompt lives here
 │       │
 │       ├── cli/
-│       │   └── main.py
+│       │   ├── main.py              # argument parsing and command handlers
+│       │   ├── formatting.py        # table rendering
+│       │   └── demo.py              # fictional demo data
 │       │
-│       └── api/
-│           └── app.py              # later phase
+│       ├── data_providers/          # later phase (Phase 2)
+│       └── api/                     # later phase (Phase 6)
 │
-├── web/                            # later phase
+├── web/                             # later phase (Phase 6)
 ├── tests/
+│   ├── conftest.py
 │   ├── unit/
+│   │   ├── test_ledger.py
+│   │   ├── test_portfolio.py
+│   │   ├── test_simulation.py
+│   │   ├── test_agent_contracts.py
+│   │   ├── test_adapters.py
+│   │   ├── test_decisions.py
+│   │   ├── test_evidence_gate.py
+│   │   ├── test_committee_integrity.py
+│   │   └── test_persistence.py
 │   ├── integration/
+│   │   ├── test_committee_workflow.py
+│   │   ├── test_persistence_reload.py
+│   │   ├── test_human_gate.py
+│   │   ├── test_hardening.py
+│   │   └── test_cli.py
 │   └── fixtures/
 │
-├── data/                           # runtime; not committed
-├── logs/                           # runtime; not committed
-├── backups/                        # runtime; not committed
+├── data/                            # runtime; not committed
+│   ├── economic.db
+│   └── runs/<run-id>/
+├── logs/                            # runtime; not committed
+├── backups/                         # runtime; not committed
 └── config/
-    └── example_config.json
+    ├── example_config.json
+    └── local_config.json            # optional, git-ignored
 ```
 
 ## Dependency Direction
@@ -107,7 +134,10 @@ Owns transaction semantics and accounting invariants.
 Owns deterministic holdings, value, cost, P&L, and allocation calculations.
 
 ### `domain/risk.py`
-Owns portfolio-rule and risk-limit evaluation.
+Owns portfolio-rule and risk-limit evaluation, the deterministic data-quality
+score, and the **evidence gate** (ADR-020) that decides whether a proposed action
+may stand as actionable. The gate is deliberately in the domain layer: it is a
+rule about evidence, not a prompt, and no adapter or model can reach it.
 
 ### `domain/simulation.py`
 Owns deterministic what-if calculations.
@@ -116,7 +146,8 @@ Owns deterministic what-if calculations.
 Owns decision status/state rules, not AI reasoning.
 
 ### `agents/orchestrator.py`
-Owns multi-agent workflow and stopping conditions.
+Owns multi-agent workflow, stopping conditions, and **committee integrity**
+(ADR-021) — whether a run was a full dual-agent committee or a degraded one.
 
 ### `agents/codex_adapter.py`
 Only place that knows Codex CLI command details.
@@ -131,7 +162,27 @@ Versioned machine-readable request/response structures.
 Owns database connection, migrations, and repositories.
 
 ### `data_providers/`
-Owns normalization of external market/company/news information.
+Owns normalization of external market/company/news information. Not implemented
+until Phase 2.
+
+### `domain/money.py`
+Owns exact decimal parsing and formatting. Floats are rejected outright so
+precision cannot be lost before a value reaches the ledger.
+
+### `agents/validators.py`
+Owns recovery of a JSON payload from raw provider output. It tolerates provider
+output *shapes* (fenced blocks, envelopes, JSONL streams) but never relaxes a
+contract.
+
+### `agents/mock_adapter.py`
+Owns offline deterministic output for testing. Every mock result is labelled
+`MOCK` and flows through the same validation as a real provider.
+
+### `agents/artifacts.py`
+Owns the on-disk run directory. Database rows and run files share the run ID.
+
+### `cli/formatting.py`
+Presentation only. No calculation may live here.
 
 ## Critical Data Flow
 
@@ -160,7 +211,9 @@ Once implementation begins, changes to these areas require focused tests:
 - agent contracts;
 - decision state machine;
 - audit history;
-- simulation math.
+- simulation math;
+- the evidence gate in `domain/risk.py`;
+- committee-integrity assessment in `agents/orchestrator.py`.
 
 ## Runtime Data
 

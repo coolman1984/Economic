@@ -200,6 +200,48 @@ Same responsibilities, using Claude Code's non-interactive interface and structu
 
 No application service should depend on provider-specific CLI flags.
 
+## 11a. Degraded Committees
+
+A run is a FULL committee only when two independent analyses were produced and
+both were cross-reviewed. Anything less is DEGRADED, and the difference is
+recorded rather than glossed over (ADR-021).
+
+Causes of degradation:
+
+- a provider CLI is missing, unauthenticated, timed out, or returned invalid output;
+- only one provider is enabled in configuration;
+- the cross-review round did not complete.
+
+Consequences, all enforced in code:
+
+- `committee_mode` is stored as DEGRADED with the specific reasons;
+- `agreement_score` is not recorded at all when fewer than two analyses exist,
+  because there was no second position to agree with;
+- every actionable proposal is downgraded to WATCH by the evidence gate;
+- confidence is capped independently of data quality, since complete price data
+  does not substitute for a missing reviewer;
+- the degradation is shown in the run view, the history listing, and again when
+  the human records a decision.
+
+A degraded run still reaches the human. It simply never pretends to be a
+committee.
+
+## 11b. The Evidence Gate
+
+Section 13 tells agents not to act on missing or stale data. That instruction is
+kept, but it is not what enforces the rule. After the chair answers, a
+deterministic gate (ADR-020) re-decides every ranked action:
+
+- an actionable action (BUY, ADD, REDUCE, SELL) on a security with no price
+  snapshot, no price evidence, or a stale price is downgraded to WATCH;
+- if the deterministic data-quality score is below the configured floor, every
+  actionable action is downgraded;
+- if the committee is degraded, every actionable action is downgraded;
+- confidence is capped at the data-quality score when evidence is thin.
+
+The chair's proposal is preserved next to the restricted result so the human can
+see what was asked for and why it was reduced.
+
 ## 12. Failure Handling
 
 Possible states:

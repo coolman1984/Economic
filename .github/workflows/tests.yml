@@ -1,0 +1,58 @@
+# Independent verification of the test suite.
+#
+# The Phase 1 review noted, correctly, that a passing suite reported in a commit
+# message is local evidence, not external verification. This workflow re-runs the
+# same suite on a clean machine for every push and pull request, so the result
+# comes from somewhere other than the author's laptop.
+
+name: tests
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: pytest (python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor declared in pyproject.toml, and a current release.
+        python-version: ["3.10", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the package and test tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run the full suite
+        run: python -m pytest -v
+
+      - name: Check the database initializes from empty
+        run: |
+          python -m economic --home "$RUNNER_TEMP/economic" init
+          python -m economic --home "$RUNNER_TEMP/economic" doctor --json
+
+      - name: Prove the committee loop runs end to end offline
+        env:
+          ECONOMIC_MOCK: "1"
+        run: |
+          HOME_DIR="$RUNNER_TEMP/economic"
+          python -m economic --home "$HOME_DIR" demo seed
+          python -m economic --home "$HOME_DIR" portfolio show --json
+          python -m economic --home "$HOME_DIR" committee \
+            --question "Is this demo portfolio concentrated?" --mock --json
