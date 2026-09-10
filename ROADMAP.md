@@ -55,7 +55,12 @@ The full loop works locally and repeated tests prove that simulations never muta
 
 ## Phase 2 — Reliable EGX Data Layer
 
-Goal: replace manual context with traceable market/company data.
+**Scope agreed 2026-09-10: the market-truth layer only. No new intelligence.**
+
+Goal: replace manual context with traceable market/company data. Phase 2 adds
+*facts and their provenance*. It adds no new agent roles, no extra review
+rounds, and no new reasoning — the committee keeps working exactly as it does
+today, just on better-sourced data.
 
 Deliverables:
 
@@ -63,16 +68,28 @@ Deliverables:
 - market price provider adapter;
 - official disclosure ingestion;
 - financial statement ingestion or normalized import path;
-- news provider abstraction;
-- source provenance;
-- publication/retrieval timestamps;
-- freshness rules;
+- source provenance on every record;
+- publication and retrieval timestamps;
+- freshness rules and visible stale-data exposure;
 - duplicate detection;
 - cached local data.
 
+Explicitly deferred out of Phase 2:
+
+- news provider abstraction (opinion-tier data; it can wait for Phase 4);
+- any new agent role, review round, or orchestration change;
+- any change to the deterministic accounting core.
+
+Why this shape: Phase 1 closed with the evidence gate refusing actionable
+recommendations on unpriced or stale securities (ADR-020). That restriction is
+correct, and Phase 2 is what dissolves it naturally — once prices arrive with a
+source and a retrieval time, the gate opens on its own. Nothing about the gate
+needs relaxing.
+
 Gate:
 
-For selected EGX companies, the system can show exactly where each important fact came from and when it was updated.
+For selected EGX companies, the system can show exactly where each important
+fact came from and when it was updated.
 
 ---
 

@@ -2,6 +2,32 @@
 
 All meaningful project changes should be recorded here.
 
+## 2026-09-10 — Phase 1 Closed
+
+Phase 1 reviewed and accepted. The deterministic accounting core is now frozen:
+`ledger.py`, `portfolio.py`, `simulation.py`, and `decisions.py` change only to
+fix a demonstrated bug, never for a feature.
+
+### Added
+
+- Continuous integration (`.github/workflows/tests.yml`). The review noted that
+  a test count in a commit message is local evidence, not independent
+  verification. The suite now re-runs on a clean machine for every push and
+  pull request, on Python 3.10 and 3.12, followed by a smoke test that
+  initializes an empty database and drives a full offline committee run.
+- `python -m economic` entry point, so scripted and CI use does not depend on
+  the console script being on PATH.
+
+### Agreed
+
+- Phase 2 is the market-truth layer only: prices, disclosures, financial
+  statements, source, retrieval time, and visible stale-data exposure. No new
+  agent roles, review rounds, or reasoning. Recorded in `ROADMAP.md`.
+- The evidence gate stays as built. Phase 2 dissolves its restrictions by
+  supplying real sourced prices, not by relaxing the rule.
+
+---
+
 ## 2026-09-10 — Phase 1 Hardening Pass
 
 A strict review of the delivered Phase 1 against `ARCHITECTURE.md` and
